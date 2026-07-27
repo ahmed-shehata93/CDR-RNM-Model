@@ -1,11 +1,16 @@
-// Phase-frequency detector — Section IV-A (Cadence-safe int state storage)
-// ref_rise / fb_rise sampled on posedge clk in TB, then clock_tick(ref_lvl, fb_lvl).
-// CP levels: cp_up_cmd held from ref edge until fb edge; on match cp_down_cmd pulses
-// one cycle then both commands return low. ref_seen / fb_seen mirror input levels.
+// Classic PFD: two D-flip-flops + delayed AND reset pulse.
+//   posedge ref_rise -> UP = 1 (holds until FB completes the cycle)
+//   posedge fb_rise  -> DN = 1 (both stay high ~T_AND_NS, then AND reset clears both)
+//   Illegal lone-set guards: an edge with the partner level already high and its FF
+//   idle is ignored, so a cmd can never latch high with no partner edge coming.
+
+`timescale 1ns / 1ps
 
 import xreal_pkg::*;
 
-module pfd (
+module pfd #(
+    parameter real T_AND_NS = 0.05   // AND + reset path delay [ns]
+)(
     input  logic       clk,
     input  logic       rst_n,
     input  logic       ref_rise,
@@ -16,88 +21,81 @@ module pfd (
     output logic       cp_down_cmd
 );
 
-    int   state_q;
+    logic up_ff;
+    logic dn_ff;
     logic ref_seen;
     logic fb_seen;
-    logic ref_lvl_d;
-    logic fb_lvl_d;
-    logic ref_edge;
-    logic fb_edge;
+    logic both_ff;
+    logic inputs_both;
+    logic clr_pulse;
+
+    assign ref_seen    = ref_rise;
+    assign fb_seen     = fb_rise;
+    assign both_ff     = up_ff & dn_ff;
+    assign inputs_both = ref_rise & fb_rise;
+
+    // Cmds mirror the FF states; the delayed AND reset bounds the both-high overlap
+    assign cp_up_cmd   = up_ff;
+    assign cp_down_cmd = dn_ff;
+
+    // UP: set on rising REF (unless FB already high with DN not armed — illegal)
+    always @(posedge ref_rise or posedge clr_pulse or negedge rst_n) begin
+        if (!rst_n || clr_pulse)
+            up_ff <= 1'b0;
+        else if (fb_rise && !dn_ff)
+            up_ff <= 1'b0;
+        else
+            up_ff <= 1'b1;
+    end
+
+    // DN: set on rising FB only if REF is low (FB leads) or UP already armed (REF led)
+    //     Block DN-only while REF is already high and UP is 0.
+    always @(posedge fb_rise or posedge clr_pulse or negedge rst_n) begin
+        if (!rst_n || clr_pulse)
+            dn_ff <= 1'b0;
+        else if (ref_rise && !up_ff)
+            dn_ff <= 1'b0;
+        else
+            dn_ff <= 1'b1;
+    end
+
+    // Clear pulse: both FFs high -> wait AND-gate delay -> one-shot clear
+    always @(posedge both_ff or negedge rst_n) begin
+        if (!rst_n) begin
+            clr_pulse <= 1'b0;
+        end else begin
+            clr_pulse <= 1'b0;
+            #(T_AND_NS);
+            if (up_ff || dn_ff) begin
+                clr_pulse <= 1'b1;
+                #0.001;
+                clr_pulse <= 1'b0;
+            end
+        end
+    end
+
+    always @(*) begin
+        if (cp_up_cmd && !cp_down_cmd)
+            pfd_state = PFD_UP;
+        else if (cp_down_cmd && !cp_up_cmd)
+            pfd_state = PFD_DOWN;
+        else
+            pfd_state = PFD_ZERO;
+    end
+
+    always @(cp_up_cmd or cp_down_cmd or negedge rst_n) begin
+        if (!rst_n)
+            pfd_valid = 1'b0;
+        else
+            pfd_valid = 1'b1;
+    end
 
     task clock_tick(
         input logic ref_lvl,
         input logic fb_lvl
     );
         begin
-            cp_up_cmd   = 1'b0;
-            cp_down_cmd = 1'b0;
-            pfd_valid   = 1'b0;
-
-            ref_edge = ref_lvl && !ref_lvl_d;
-            fb_edge  = fb_lvl && !fb_lvl_d;
-
-            // Hold UP or DOWN until the partner edge completes the cycle.
-            if (state_q == PFD_UP)
-                cp_up_cmd = 1'b1;
-            else if (state_q == PFD_DOWN)
-                cp_down_cmd = 1'b1;
-
-            // Match: fb arrives while UP is active — DOWN pulse, then idle.
-            if (fb_edge && (state_q == PFD_UP)) begin
-                cp_up_cmd   = 1'b0;
-                cp_down_cmd = 1'b1;
-                state_q     = PFD_ZERO;
-                pfd_state   = PFD_ZERO;
-                pfd_valid   = 1'b1;
-            end
-            // Match: ref arrives while DOWN is active — UP pulse, then idle.
-            else if (ref_edge && (state_q == PFD_DOWN)) begin
-                cp_up_cmd   = 1'b1;
-                cp_down_cmd = 1'b0;
-                state_q     = PFD_ZERO;
-                pfd_state   = PFD_ZERO;
-                pfd_valid   = 1'b1;
-            end
-            // Simultaneous edges while idle — DOWN pulse only, then idle.
-            else if (ref_edge && fb_edge && (state_q == PFD_ZERO)) begin
-                cp_up_cmd   = 1'b0;
-                cp_down_cmd = 1'b1;
-                state_q     = PFD_ZERO;
-                pfd_state   = PFD_ZERO;
-                pfd_valid   = 1'b1;
-            end
-            // Ref leads: enter UP (cp_up stays high until fb match).
-            else if (ref_edge && (state_q == PFD_ZERO)) begin
-                state_q   = PFD_UP;
-                pfd_state = PFD_UP;
-                cp_up_cmd = 1'b1;
-                pfd_valid = 1'b1;
-            end
-            // Fb leads: enter DOWN (cp_down stays high until ref match).
-            else if (fb_edge && (state_q == PFD_ZERO)) begin
-                state_q     = PFD_DOWN;
-                pfd_state   = PFD_DOWN;
-                cp_down_cmd = 1'b1;
-                pfd_valid   = 1'b1;
-            end
-
-            ref_seen  = ref_lvl;
-            fb_seen   = fb_lvl;
-            ref_lvl_d = ref_lvl;
-            fb_lvl_d  = fb_lvl;
         end
     endtask
-
-    always @(negedge rst_n) begin
-        state_q     = PFD_ZERO;
-        ref_seen    = 1'b0;
-        fb_seen     = 1'b0;
-        ref_lvl_d   = 1'b0;
-        fb_lvl_d    = 1'b0;
-        pfd_valid   = 1'b0;
-        pfd_state   = PFD_ZERO;
-        cp_up_cmd   = 1'b0;
-        cp_down_cmd = 1'b0;
-    end
 
 endmodule

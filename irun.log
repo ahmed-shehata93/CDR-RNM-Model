@@ -1,0 +1,223 @@
+irun(64): 15.20-p001: (c) Copyright 1995-2016 Cadence Design Systems, Inc.
+TOOL:	irun(64)	15.20-p001: Started on Jul 10, 2026 at 18:42:21 EET
+irun
+	-f compile.f
+		-sv
+		+access+rwc
+		-timescale 1ns/1ps
+		00_xreal_pkg.sv
+		loop_filter.sv
+		vco.sv
+		freq_xbit_buffer.sv
+		ref_xbit_gen.sv
+		pfd.sv
+		charge_pump.sv
+		pll_full_tb.sv
+Recompiling... reason: file './pfd.sv' is newer than expected.
+	expected: Fri Jul 10 18:30:06 2026
+	actual:   Fri Jul 10 18:41:52 2026
+file: pfd.sv
+	module worklib.pfd:sv
+		errors: 0, warnings: 0
+file: pll_full_tb.sv
+	module worklib.pll_full_tb:sv
+		errors: 0, warnings: 0
+		Caching library 'worklib' ....... Done
+	Elaborating the design hierarchy:
+	Top level design units:
+		xreal_pkg
+		$unit_0x3a555bc3
+		pll_full_tb
+ncelab: *W,DSEMEL: This SystemVerilog design will be simulated as per IEEE 1800-2009 SystemVerilog simulation semantics. Use -disable_sem2009 option for turning off SV 2009 simulation semantics.
+	Building instance overlay tables: .............
+                xbit_edges[i].level  <= 2'(xbit_seq.ev[i].level);
+                                          |
+ncelab: *W,ENUMERR (./freq_xbit_buffer.sv,51|42): This assignment is a violation of SystemVerilog strong typing rules for enumeration datatypes.
+..
+                xbit_edges[i].level  <= 2'(xbit_seq.ev[i].level);
+                                          |
+ncelab: *W,ENUMERR (./ref_xbit_gen.sv,44|42): This assignment is a violation of SystemVerilog strong typing rules for enumeration datatypes.
+..... Done
+	Generating native compiled code:
+		worklib.charge_pump:sv <0x1ac40438>
+			streams:   4, words:  6602
+		worklib.freq_xbit_buffer:sv <0x278c21d9>
+			streams:   6, words:  7518
+		worklib.loop_filter:sv <0x761dd5ce>
+			streams:   4, words:  6619
+		worklib.pfd:sv <0x23d994de>
+			streams:  16, words:  9059
+		worklib.pll_full_tb:sv <0x375e22d1>
+			streams:  78, words: 88705
+		worklib.ref_xbit_gen:sv <0x20484397>
+			streams:   5, words:  5961
+		worklib.vco:sv <0x556bfb77>
+			streams:   7, words: 12816
+	Building instance specific data structures.
+	Loading native compiled code:     .................... Done
+	Design hierarchy summary:
+		                 Instances  Unique
+		Modules:                 7       7
+		Verilog packages:        1       1
+		Registers:             359     359
+		Scalar wires:           42       -
+		Vectored wires:         31       -
+		Always blocks:           9       9
+		Initial blocks:          6       6
+		Parallel blocks:         1       1
+		Pseudo assignments:     47      47
+		Compilation units:       1       1
+		Simulation timescale:  1ps
+	Writing initial simulation snapshot: worklib.pll_full_tb:sv
+Loading snapshot worklib.pll_full_tb:sv .................... Done
+ncsim: *W,DSEM2009: This SystemVerilog design is simulated as per IEEE 1800-2009 SystemVerilog simulation semantics. Use -disable_sem2009 option for turning off SV 2009 simulation semantics.
+ncsim> source /opt/cadence/INCISIV152/tools/inca/files/ncsimrc
+ncsim> run
+ncsim: *W,DFSET: $dumpfile has already been set to wave.vcd.
+            File: ./pll_full_tb.sv, line = 500, pos = 16
+           Scope: pll_full_tb
+            Time: 0 FS + 0
+
+DEBUG VCO step input (bypass LF) (1 terms):
+  [0] b=1.000000e+00  a=0.000000e+00  m=1  t0=0.000e+00
+Reference F_REF XREAL (1 terms):
+  [0] b=6.000000e+07  a=0.000000e+00  m=1  t0=0.000e+00
+Reference XBIT (128 edges, level@0=0):
+  [0] t=1.857e-09 s  level=1
+  [1] t=1.019e-08 s  level=0
+  [2] t=1.852e-08 s  level=1
+  [3] t=2.686e-08 s  level=0
+  [4] t=3.519e-08 s  level=1
+  [5] t=4.352e-08 s  level=0
+  [6] t=5.186e-08 s  level=1
+  [7] t=6.019e-08 s  level=0
+  [8] t=6.852e-08 s  level=1
+  [9] t=7.686e-08 s  level=0
+  [10] t=8.519e-08 s  level=1
+  [11] t=9.352e-08 s  level=0
+  [12] t=1.019e-07 s  level=1
+  [13] t=1.102e-07 s  level=0
+  [14] t=1.185e-07 s  level=1
+  [15] t=1.269e-07 s  level=0
+  [16] t=1.352e-07 s  level=1
+  [17] t=1.435e-07 s  level=0
+  [18] t=1.519e-07 s  level=1
+  [19] t=1.602e-07 s  level=0
+  [20] t=1.685e-07 s  level=1
+  [21] t=1.769e-07 s  level=0
+  [22] t=1.852e-07 s  level=1
+  [23] t=1.935e-07 s  level=0
+  [24] t=2.019e-07 s  level=1
+  [25] t=2.102e-07 s  level=0
+  [26] t=2.185e-07 s  level=1
+  [27] t=2.269e-07 s  level=0
+  [28] t=2.352e-07 s  level=1
+  [29] t=2.435e-07 s  level=0
+  [30] t=2.519e-07 s  level=1
+  [31] t=2.602e-07 s  level=0
+  [32] t=2.685e-07 s  level=1
+  [33] t=2.769e-07 s  level=0
+  [34] t=2.852e-07 s  level=1
+  [35] t=2.935e-07 s  level=0
+  [36] t=3.019e-07 s  level=1
+  [37] t=3.102e-07 s  level=0
+  [38] t=3.185e-07 s  level=1
+  [39] t=3.269e-07 s  level=0
+  [40] t=3.352e-07 s  level=1
+  [41] t=3.435e-07 s  level=0
+  [42] t=3.519e-07 s  level=1
+  [43] t=3.602e-07 s  level=0
+  [44] t=3.685e-07 s  level=1
+  [45] t=3.769e-07 s  level=0
+  [46] t=3.852e-07 s  level=1
+  [47] t=3.935e-07 s  level=0
+  [48] t=4.019e-07 s  level=1
+  [49] t=4.102e-07 s  level=0
+  [50] t=4.185e-07 s  level=1
+  [51] t=4.269e-07 s  level=0
+  [52] t=4.352e-07 s  level=1
+  [53] t=4.435e-07 s  level=0
+  [54] t=4.519e-07 s  level=1
+  [55] t=4.602e-07 s  level=0
+  [56] t=4.685e-07 s  level=1
+  [57] t=4.769e-07 s  level=0
+  [58] t=4.852e-07 s  level=1
+  [59] t=4.935e-07 s  level=0
+  [60] t=5.019e-07 s  level=1
+  [61] t=5.102e-07 s  level=0
+  [62] t=5.185e-07 s  level=1
+  [63] t=5.269e-07 s  level=0
+  [64] t=5.352e-07 s  level=1
+  [65] t=5.435e-07 s  level=0
+  [66] t=5.519e-07 s  level=1
+  [67] t=5.602e-07 s  level=0
+  [68] t=5.685e-07 s  level=1
+  [69] t=5.769e-07 s  level=0
+  [70] t=5.852e-07 s  level=1
+  [71] t=5.935e-07 s  level=0
+  [72] t=6.019e-07 s  level=1
+  [73] t=6.102e-07 s  level=0
+  [74] t=6.185e-07 s  level=1
+  [75] t=6.269e-07 s  level=0
+  [76] t=6.352e-07 s  level=1
+  [77] t=6.435e-07 s  level=0
+  [78] t=6.519e-07 s  level=1
+  [79] t=6.602e-07 s  level=0
+  [80] t=6.685e-07 s  level=1
+  [81] t=6.769e-07 s  level=0
+  [82] t=6.852e-07 s  level=1
+  [83] t=6.935e-07 s  level=0
+  [84] t=7.019e-07 s  level=1
+  [85] t=7.102e-07 s  level=0
+  [86] t=7.185e-07 s  level=1
+  [87] t=7.269e-07 s  level=0
+  [88] t=7.352e-07 s  level=1
+  [89] t=7.435e-07 s  level=0
+  [90] t=7.519e-07 s  level=1
+  [91] t=7.602e-07 s  level=0
+  [92] t=7.685e-07 s  level=1
+  [93] t=7.769e-07 s  level=0
+  [94] t=7.852e-07 s  level=1
+  [95] t=7.935e-07 s  level=0
+  [96] t=8.019e-07 s  level=1
+  [97] t=8.102e-07 s  level=0
+  [98] t=8.185e-07 s  level=1
+  [99] t=8.269e-07 s  level=0
+  [100] t=8.352e-07 s  level=1
+  [101] t=8.435e-07 s  level=0
+  [102] t=8.519e-07 s  level=1
+  [103] t=8.602e-07 s  level=0
+  [104] t=8.685e-07 s  level=1
+  [105] t=8.769e-07 s  level=0
+  [106] t=8.852e-07 s  level=1
+  [107] t=8.935e-07 s  level=0
+  [108] t=9.019e-07 s  level=1
+  [109] t=9.102e-07 s  level=0
+  [110] t=9.185e-07 s  level=1
+  [111] t=9.269e-07 s  level=0
+  [112] t=9.352e-07 s  level=1
+  [113] t=9.435e-07 s  level=0
+  [114] t=9.519e-07 s  level=1
+  [115] t=9.602e-07 s  level=0
+  [116] t=9.685e-07 s  level=1
+  [117] t=9.769e-07 s  level=0
+  [118] t=9.852e-07 s  level=1
+  [119] t=9.935e-07 s  level=0
+  [120] t=1.002e-06 s  level=1
+  [121] t=1.010e-06 s  level=0
+  [122] t=1.019e-06 s  level=1
+  [123] t=1.027e-06 s  level=0
+  [124] t=1.035e-06 s  level=1
+  [125] t=1.044e-06 s  level=0
+  [126] t=1.052e-06 s  level=1
+  [127] t=1.060e-06 s  level=0
+============================================================
+ PLL TB — DEBUG: VCO vin = unit step (1.000 V), LF disconnected
+ F_REF=6.000e+07 Hz  F_VCO=1.000e+07 Hz  I_CP=1.000e-04 A
+ icp_at_t = charge-pump current [A]
+ Viva: ref_xbit_at_t fb_xbit_at_t icp_at_t lf_v_at_t vco_fout_at_t vco_rf_at_t
+============================================================
+Simulation complete via $finish(1) at time 5019 NS + 0
+./pll_full_tb.sv:496         $finish;
+ncsim> exit
+TOOL:	irun(64)	15.20-p001: Exiting on Jul 10, 2026 at 18:42:24 EET  (total: 00:00:03)

@@ -872,7 +872,8 @@ package xreal_pkg;
                 decay_pole = -1.0e12;
             else
                 decay_pole = -1.0 / tau;
-            xreal_rebase_m1(seq, tk);
+            // Eq. (5) replaces ICP after tk (not an incremental add on prior terms).
+            xreal_clear(seq);
             xreal_add_term(seq, Iend, 0.0, 1, tk);
             xreal_add_term(seq, I0 - Iend, decay_pole, 1, tk);
             xreal_compress(seq);
