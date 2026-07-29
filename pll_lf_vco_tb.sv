@@ -95,6 +95,8 @@ module pll_lf_vco_tb;
         .freq_valid         (vco_freq_valid),
         .freq_terms         (vco_freq_terms),
         .freq_term_count    (vco_freq_count),
+        .delta_terms        (),
+        .delta_term_count   (),
         .spectral_valid     (vco_spec_valid),
         .spec_out           (vco_spec_out),
         .spec_out_count     (vco_spec_count)

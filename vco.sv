@@ -16,6 +16,9 @@ module vco #(
     output logic        freq_valid,
     output xreal_term_t freq_terms [0:MAX_XREAL_TERMS-1],
     output int          freq_term_count,
+    // delta_f = K_VCO * vin (fout minus the f0 term), synchronous with freq_valid
+    output xreal_term_t delta_terms [0:MAX_XREAL_TERMS-1],
+    output int          delta_term_count,
     output logic        spectral_valid,
     output spectral_bin_t spec_out [0:MAX_SPECTRAL_BINS-1],
     output int          spec_out_count
@@ -30,17 +33,20 @@ module vco #(
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            freq_valid      <= 1'b0;
-            freq_term_count <= 0;
-            spectral_valid  <= 1'b0;
-            spec_out_count  <= 0;
+            freq_valid       <= 1'b0;
+            freq_term_count  <= 0;
+            delta_term_count <= 0;
+            spectral_valid   <= 1'b0;
+            spec_out_count   <= 0;
         end else if (vin_valid) begin
             vin_seq.count = vin_term_count;
             for (vco_i = 0; vco_i < vin_term_count; vco_i = vco_i + 1)
                 vin_seq.terms[vco_i] = vin_terms[vco_i];
 
             fout_seq    = vco_v_to_f(vin_seq, K_VCO, F0, t_event);
-            delta_f_seq = xreal_delta_f(fout_seq, F0);
+            // Build delta_f directly as K*vin: xreal_delta_f(fout, f0) mis-subtracts
+            // f0 when fout carries several DC terms at different t0.
+            delta_f_seq = xreal_scale(K_VCO, vin_seq);
             spec_seq    = vco_delta_f_to_spectral(delta_f_seq, F0, t_event);
 
             freq_term_count <= fout_seq.count;
@@ -51,6 +57,14 @@ module vco #(
                 freq_terms[vco_i].t0 <= fout_seq.terms[vco_i].t0;
             end
             freq_valid <= 1'b1;
+
+            delta_term_count <= delta_f_seq.count;
+            for (vco_i = 0; vco_i < delta_f_seq.count; vco_i = vco_i + 1) begin
+                delta_terms[vco_i].b  <= delta_f_seq.terms[vco_i].b;
+                delta_terms[vco_i].a  <= delta_f_seq.terms[vco_i].a;
+                delta_terms[vco_i].m  <= delta_f_seq.terms[vco_i].m;
+                delta_terms[vco_i].t0 <= delta_f_seq.terms[vco_i].t0;
+            end
 
             spec_out_count <= spec_seq.count;
             for (vco_k = 0; vco_k < spec_seq.count; vco_k = vco_k + 1) begin

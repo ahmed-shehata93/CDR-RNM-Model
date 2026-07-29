@@ -42,7 +42,7 @@ module pll_full_tb;
     localparam real FILTER_C       = 1.0 / CAP_LF;   // gain 1/C [V/(A*s)]
     localparam real I_CP           = 100.0e-6;
     localparam real TAU_CP         = 1.0e-9;
-    localparam real T_SIM          = 5.0e-6;
+    localparam real T_SIM          = 50.2e-6;
     localparam real SAMPLE_SLOW    = 0.1;
     localparam real SAMPLE_STEP_RF = 0.1;
     localparam real V_RF_PEAK      = 0.5;
@@ -85,6 +85,8 @@ module pll_full_tb;
     int          vco_vin_count;
     xreal_term_t vco_freq_terms [0:MAX_XREAL_TERMS-1];
     int          vco_freq_count;
+    xreal_term_t vco_df_terms [0:MAX_XREAL_TERMS-1];
+    int          vco_df_count;
 
     xbit_seq_t  fb_xbit_plot;
     xreal_seq_t icp_seq;
@@ -109,6 +111,7 @@ module pll_full_tb;
 
     bit fb_refresh_pending;
     bit vco_stim_pending;
+    bit lf_stim_pending;
 
     logic fb_xbit_valid_d1;
 
@@ -119,7 +122,6 @@ module pll_full_tb;
 
     // RF phase bookkeeping: delta_f cache is rebased at every VCO event, so keep
     // the already-accumulated phase in an offset to stay continuous across swaps.
-    xreal_seq_t vco_vin_seq_ev;
     real        rf_phi_off_cyc = 0.0;
     real        rf_phi_cyc;
     real        fix_t_ev;
@@ -217,6 +219,8 @@ module pll_full_tb;
         .freq_valid      (vco_freq_valid),
         .freq_terms      (vco_freq_terms),
         .freq_term_count (vco_freq_count),
+        .delta_terms     (vco_df_terms),
+        .delta_term_count(vco_df_count),
         .spectral_valid  (),
         .spec_out        (),
         .spec_out_count  ()
@@ -257,9 +261,17 @@ module pll_full_tb;
             fb_in_valid        <= 1'b0;
             fb_refresh_pending <= 1'b0;
             vco_stim_pending   <= 1'b0;
+            lf_stim_pending    <= 1'b0;
         end else begin
-            lf_in_valid  <= 1'b0;
             fb_in_valid  <= 1'b0;
+
+            // One-cycle LF stimulus — count/terms must be NBA-settled first
+            if (lf_stim_pending) begin
+                lf_in_valid     <= 1'b1;
+                lf_stim_pending <= 1'b0;
+            end else begin
+                lf_in_valid <= 1'b0;
+            end
 
             // One-cycle VCO stimulus (single NBA driver — avoids racing initial blocking assign)
             if (vco_stim_pending) begin
@@ -279,10 +291,12 @@ module pll_full_tb;
                 refresh_icp_seq_from_ports();
                 icp_ready = 1'b1;
 
-                lf_in_count = icp_count;
+                // All NBA + pending: same race as VCO vin (blocking count + NBA terms
+                // let LF see new count with old terms → unpaired ±10 V PF residues).
+                lf_in_count      <= icp_count;
                 for (li = 0; li < icp_count; li = li + 1)
                     lf_in_terms[li] <= icp_terms[li];
-                lf_in_valid <= 1'b1;
+                lf_stim_pending  <= 1'b1;
                 cp_dut.clear_valid();
             end
 
@@ -293,11 +307,13 @@ module pll_full_tb;
                 lf_ready = 1'b1;
 
                 if (VCO_DEBUG_MODE == 0) begin
-                    vco_vin_count = lf_out_count;
+                    // All NBA: count/terms/t_event settle together before
+                    // vco_stim_pending pulses vin_valid on the NEXT clock.
+                    vco_vin_count     <= lf_out_count;
                     for (li = 0; li < lf_out_count; li = li + 1)
                         vco_vin_terms[li] <= lf_out_terms[li];
-                    t_event_s    <= $realtime * 1.0e-9;
-                    vco_in_valid <= 1'b1;
+                    t_event_s         <= $realtime * 1.0e-9;
+                    vco_stim_pending  <= 1'b1;
                 end
             end
 
@@ -310,14 +326,13 @@ module pll_full_tb;
                     vco_fout_seq.terms[li] = vco_freq_terms[li];
                 vco_ready = 1'b1;
 
-                // delta_f = K_VCO * vin, built directly from the VCO input terms.
-                // (xreal_delta_f(fout, f0) subtracts f0 from every DC term; with the
-                // f0 term at t_event and signal DC terms at the CP event time they
-                // never merge, leaving delta_f off by -f0.)
-                vco_vin_seq_ev.count = vco_vin_count;
-                for (li = 0; li < vco_vin_count; li = li + 1)
-                    vco_vin_seq_ev.terms[li] = vco_vin_terms[li];
-                vco_delta_f_cached = xreal_scale(K_VCO, vco_vin_seq_ev);
+                // delta_f from the VCO's own synchronous port (terms + count are NBA
+                // outputs of the same event — no mixing with a newer vin commit).
+                // Reading the TB vin mirrors here raced: vin_count is blocking and
+                // vin_terms non-blocking, so a same-edge LF commit corrupted the set.
+                vco_delta_f_cached.count = vco_df_count;
+                for (li = 0; li < vco_df_count; li = li + 1)
+                    vco_delta_f_cached.terms[li] = vco_df_terms[li];
 
                 // Phase continuity: absorb the old-vs-new integral mismatch at t_ev.
                 fix_phi_new     = integrate_xreal_m1_at_t(vco_delta_f_cached, fix_t_ev);
@@ -413,6 +428,7 @@ module pll_full_tb;
         icp_ready = 0; lf_ready = 0; vco_ready = 0;
         fb_refresh_pending = 0;
         vco_stim_pending = 0;
+        lf_stim_pending = 0;
 
         repeat (5) @(posedge clk);
         rst_n = 1;
