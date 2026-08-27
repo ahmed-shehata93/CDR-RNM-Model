@@ -600,7 +600,7 @@ package xreal_pkg;
     // =========================================================================
     // XBIT — Section III-C logic domain (0, 1, z, x) as event-driven edges
     // =========================================================================
-    parameter int MAX_XBIT_EDGES = 128;
+    parameter int MAX_XBIT_EDGES = 512;
 
     typedef enum logic [1:0] {
         XBIT_VAL_0 = 2'b00,
@@ -768,6 +768,7 @@ package xreal_pkg;
     endfunction
 
     // Place XBIT edges when integral fout crosses half-cycle boundaries — matches VCO phase.
+    // Module equivalent: xreal_to_xbit #(.EDGE_MODE(1))
     function automatic xbit_seq_t xbit_gen_from_fout_integrated(
         input xreal_seq_t fout,
         input real        t_start,
@@ -806,7 +807,8 @@ package xreal_pkg;
         end
     endfunction
 
-    // Build xbit from XREAL frequency sequence (uses f at t_start)
+    // Build xbit from XREAL frequency sequence (uses f at t_start).
+    // Module equivalent: xreal_to_xbit #(.EDGE_MODE(0), .PHASE_SRC(0))
     function automatic xbit_seq_t xbit_from_xreal_freq(
         input xreal_seq_t freq_seq,
         input real        t_start,
@@ -826,6 +828,7 @@ package xreal_pkg;
 
     // Feedback path: phase from integrated VCO frequency (updates each event).
     // Optional phase_offset_rad trims static divider / routing delay [rad].
+    // Module equivalent: xreal_to_xbit #(.EDGE_MODE(0), .PHASE_SRC(1))
     function automatic xbit_seq_t xbit_from_xreal_freq_vco_phase(
         input xreal_seq_t freq_seq,
         input real        t_start,

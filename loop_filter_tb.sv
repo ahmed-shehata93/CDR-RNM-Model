@@ -45,6 +45,7 @@ module loop_filter_tb;
     bit  x_in_ready;
     bit  y_out_ready;
 
+    // FILTER_R defaults to 0 (pure leaky integrator; no series-R zero)
     loop_filter #(
         .FILTER_C (FILTER_C),
         .FILTER_P (POLE),
