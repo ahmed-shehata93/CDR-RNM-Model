@@ -1,7 +1,9 @@
 // Full PLL TB: ref/fb -> PFD -> CP -> LF -> VCO -> xreal_to_xbit -> xbit_to_logic
 //
 // Feedback path (closed loop):
-//   VCO fout (XREAL) -> xreal_to_xbit (INTEGRATED) -> xbit_to_logic -> fb_rise (logic)
+//   VCO fout (XREAL) -> xreal_to_xbit (INTEGRATED, optional white edge jitter)
+//                    -> xbit_to_logic -> fb_rise (logic)
+//   FB_JITTER_EN / FB_JITTER_SIGMA switch noise on the FB zero-crossings only.
 // Reference:
 //   ref_xbit_gen -> ref_clk / ref_rise (logic)
 //
@@ -56,6 +58,11 @@ module pll_full_tb;
     // Future XBIT window per converter update (~2*f edges). Keep-alive below
     // re-arms before the window expires between sparse VCO events.
     localparam real FB_T_HORIZON   = 2.0e-6;
+    // White VCO edge jitter (zero-crossing uncertainty) on FB XBIT path only.
+    // FB_JITTER_EN=0 => ideal edges; =1 => t_edge += N(0, FB_JITTER_SIGMA^2).
+    localparam bit  FB_JITTER_EN    = 1'b0;
+    localparam real FB_JITTER_SIGMA = 5.0e-12; // RMS [s] (5 ps default when on)
+    localparam int  FB_JITTER_SEED  = 1;
 
     logic clk;
     logic rst_n;
@@ -163,7 +170,10 @@ module pll_full_tb;
         .EDGE_MODE        (1),
         .PHASE_SRC        (1),
         .T_HORIZON        (FB_T_HORIZON),
-        .PHASE_OFFSET_RAD (0.0)
+        .PHASE_OFFSET_RAD (0.0),
+        .ENABLE_JITTER    (FB_JITTER_EN),
+        .JITTER_SIGMA_S   (FB_JITTER_SIGMA),
+        .JITTER_SEED      (FB_JITTER_SEED)
     ) fb_xreal_to_xbit (
         .clk                 (clk),
         .rst_n               (rst_n),
@@ -539,6 +549,11 @@ module pll_full_tb;
         $display(" ramp I/C = %0.3e V/s   CP hold kick Kvco*Icp*R = %0.3e Hz   I*R = %0.3e V",
                  I_CP / CAP_LF, K_VCO * I_CP * R_LF, I_CP * R_LF);
         $display(" fb path: VCO fout -> xreal_to_xbit(INTEGRATED) -> xbit_to_logic -> PFD");
+        if (FB_JITTER_EN)
+            $display(" FB white edge jitter ON  sigma=%0.3e s  seed=%0d",
+                     FB_JITTER_SIGMA, FB_JITTER_SEED);
+        else
+            $display(" FB white edge jitter OFF");
         $display(" ref_clk = free-running square wave from ref_xbit_gen");
         $display(" icp_at_t = charge-pump current [A]");
         $display(" Viva: ref_xbit_at_t fb_xbit_at_t icp_at_t lf_v_at_t vco_fout_at_t vco_rf_at_t");

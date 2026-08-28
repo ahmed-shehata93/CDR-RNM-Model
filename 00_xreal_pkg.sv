@@ -650,6 +650,42 @@ package xreal_pkg;
         end
     endfunction
 
+    // Standard normal N(0,1) via Box-Muller; seed updated in place.
+    function automatic real xreal_randn(ref int seed);
+        real u1, u2;
+        begin
+            u1 = (real'($urandom(seed)) + 1.0) / 4294967296.0;
+            u2 = (real'($urandom(seed)) + 1.0) / 4294967296.0;
+            xreal_randn = $sqrt(-2.0 * $ln(u1))
+                        * $cos(2.0 * 3.14159265358979323846 * u2);
+        end
+    endfunction
+
+    // White timing jitter on each XBIT edge: t' = t + N(0, sigma^2).
+    // Enforce strict monotonicity so edges never reverse order.
+    function automatic void xbit_apply_white_jitter(
+        ref   xbit_seq_t seq,
+        input real       t_start,
+        input real       sigma_s,
+        ref   int        seed
+    );
+        real t_prev, t_j;
+        real eps;
+        begin
+            if (sigma_s <= 0.0 || seq.count <= 0)
+                return;
+            eps    = 1.0e-15;
+            t_prev = t_start;
+            for (int i = 0; i < seq.count; i++) begin
+                t_j = seq.ev[i].t_edge + sigma_s * xreal_randn(seed);
+                if (t_j <= t_prev)
+                    t_j = t_prev + eps;
+                seq.ev[i].t_edge = t_j;
+                t_prev = t_j;
+            end
+        end
+    endfunction
+
     // Plot helper: evaluate xbit level at time t (0.0/1.0/0.5/-1 for 0/1/z/x)
     function automatic real eval_xbit_at_t(input xbit_seq_t seq, input real t);
         xbit_val_e lvl;

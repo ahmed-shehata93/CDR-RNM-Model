@@ -13,6 +13,10 @@
 //
 // Edges are generated on [t_event, t_event+T_HORIZON] so a finite MAX_XBIT_EDGES
 // budget can drive a live PFD via xbit_to_logic.
+//
+// Optional white edge jitter (zero-crossing uncertainty):
+//   ENABLE_JITTER=1 adds independent N(0, JITTER_SIGMA_S^2) to each edge time.
+//   ENABLE_JITTER=0 leaves ideal edges unchanged.
 
 import xreal_pkg::*;
 
@@ -20,7 +24,10 @@ module xreal_to_xbit #(
     parameter int  EDGE_MODE        = 1,      // 0=SQUARE, 1=INTEGRATED
     parameter int  PHASE_SRC        = 1,      // 0=EXTERNAL, 1=FROM_FOUT (SQUARE)
     parameter real T_HORIZON        = 1.0e-6, // [s] future window from t_event
-    parameter real PHASE_OFFSET_RAD = 0.0     // static trim [rad]
+    parameter real PHASE_OFFSET_RAD = 0.0,    // static trim [rad]
+    parameter bit  ENABLE_JITTER    = 1'b0,   // 1 = white timing noise on edges
+    parameter real JITTER_SIGMA_S   = 1.0e-12,// RMS edge jitter [s]
+    parameter int  JITTER_SEED      = 1       // RNG seed (reproducible)
 )(
     input  logic        clk,
     input  logic        rst_n,
@@ -43,6 +50,7 @@ module xreal_to_xbit #(
     real        phase_use;
     real        f_hz;
     int         i;
+    int         jitter_seed;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -50,6 +58,7 @@ module xreal_to_xbit #(
             xbit_edge_count    <= 0;
             level_at_zero      <= XBIT_VAL_0;
             phase_rad_at_event <= 0.0;
+            jitter_seed         = JITTER_SEED;
         end else if (vin_valid) begin
             freq_seq.count = freq_term_count;
             for (i = 0; i < freq_term_count; i = i + 1)
@@ -88,6 +97,11 @@ module xreal_to_xbit #(
                     freq_seq, t_start, t_stop, PHASE_OFFSET_RAD
                 );
             end
+
+            if (ENABLE_JITTER)
+                xbit_apply_white_jitter(
+                    xbit_seq, t_start, JITTER_SIGMA_S, jitter_seed
+                );
 
             xbit_edge_count <= xbit_seq.count;
             level_at_zero   <= 2'(xbit_seq.level_at_zero);
