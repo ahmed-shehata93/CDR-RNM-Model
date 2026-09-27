@@ -1,6 +1,6 @@
 -sv
 +access+rwc
--timescale 1ns/1ps
+-timescale 1ns/10fs
 00_xreal_pkg.sv
 loop_filter.sv
 vco.sv

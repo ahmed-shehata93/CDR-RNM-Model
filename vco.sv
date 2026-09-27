@@ -31,14 +31,8 @@ module vco #(
     int            vco_i;
     int            vco_k;
 
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            freq_valid       <= 1'b0;
-            freq_term_count  <= 0;
-            delta_term_count <= 0;
-            spectral_valid   <= 1'b0;
-            spec_out_count   <= 0;
-        end else if (vin_valid) begin
+    task automatic apply_vin();
+        begin
             vin_seq.count = vin_term_count;
             for (vco_i = 0; vco_i < vin_term_count; vco_i = vco_i + 1)
                 vin_seq.terms[vco_i] = vin_terms[vco_i];
@@ -49,29 +43,41 @@ module vco #(
             delta_f_seq = xreal_scale(K_VCO, vin_seq);
             spec_seq    = vco_delta_f_to_spectral(delta_f_seq, F0, t_event);
 
-            freq_term_count <= fout_seq.count;
+            freq_term_count = fout_seq.count;
             for (vco_i = 0; vco_i < fout_seq.count; vco_i = vco_i + 1) begin
-                freq_terms[vco_i].b  <= fout_seq.terms[vco_i].b;
-                freq_terms[vco_i].a  <= fout_seq.terms[vco_i].a;
-                freq_terms[vco_i].m  <= fout_seq.terms[vco_i].m;
-                freq_terms[vco_i].t0 <= fout_seq.terms[vco_i].t0;
+                freq_terms[vco_i].b  = fout_seq.terms[vco_i].b;
+                freq_terms[vco_i].a  = fout_seq.terms[vco_i].a;
+                freq_terms[vco_i].m  = fout_seq.terms[vco_i].m;
+                freq_terms[vco_i].t0 = fout_seq.terms[vco_i].t0;
             end
-            freq_valid <= 1'b1;
 
-            delta_term_count <= delta_f_seq.count;
+            delta_term_count = delta_f_seq.count;
             for (vco_i = 0; vco_i < delta_f_seq.count; vco_i = vco_i + 1) begin
-                delta_terms[vco_i].b  <= delta_f_seq.terms[vco_i].b;
-                delta_terms[vco_i].a  <= delta_f_seq.terms[vco_i].a;
-                delta_terms[vco_i].m  <= delta_f_seq.terms[vco_i].m;
-                delta_terms[vco_i].t0 <= delta_f_seq.terms[vco_i].t0;
+                delta_terms[vco_i].b  = delta_f_seq.terms[vco_i].b;
+                delta_terms[vco_i].a  = delta_f_seq.terms[vco_i].a;
+                delta_terms[vco_i].m  = delta_f_seq.terms[vco_i].m;
+                delta_terms[vco_i].t0 = delta_f_seq.terms[vco_i].t0;
             end
 
-            spec_out_count <= spec_seq.count;
+            spec_out_count = spec_seq.count;
             for (vco_k = 0; vco_k < spec_seq.count; vco_k = vco_k + 1) begin
-                spec_out[vco_k].omega <= spec_seq.entry[vco_k].omega;
-                spec_out[vco_k].I_val <= spec_seq.entry[vco_k].I_val;
-                spec_out[vco_k].Q_val <= spec_seq.entry[vco_k].Q_val;
+                spec_out[vco_k].omega = spec_seq.entry[vco_k].omega;
+                spec_out[vco_k].I_val = spec_seq.entry[vco_k].I_val;
+                spec_out[vco_k].Q_val = spec_seq.entry[vco_k].Q_val;
             end
+        end
+    endtask
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            freq_valid       <= 1'b0;
+            freq_term_count  <= 0;
+            delta_term_count <= 0;
+            spectral_valid   <= 1'b0;
+            spec_out_count   <= 0;
+        end else if (vin_valid) begin
+            apply_vin();
+            freq_valid     <= 1'b1;
             spectral_valid <= 1'b1;
         end else begin
             freq_valid     <= 1'b0;

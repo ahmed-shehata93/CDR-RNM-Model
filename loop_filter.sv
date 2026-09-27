@@ -15,7 +15,8 @@ module loop_filter #(
     parameter real FILTER_P  = -1.0e6,
     parameter int  FILTER_N  = 1,
     parameter real FILTER_R  = 0.0,
-    parameter real FILTER_C2 = 0.0
+    parameter real FILTER_C2 = 0.0,
+    parameter real VC_INIT   = 0.0
 )(
     input  logic        clk,
     input  logic        rst_n,
@@ -38,6 +39,7 @@ module loop_filter #(
     bit         vc_state_ready;
     bit         c2_state_ready;
     real        lf_tk;
+    real        lf_tk_last;
     real        lf_vc0;
     real        lf_c20;
     real        tau_c2;
@@ -45,13 +47,10 @@ module loop_filter #(
     real        gain_c2;
     int         lf_i;
 
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            out_valid        <= 1'b0;
-            out_term_count   <= 0;
-            vc_state_ready    = 1'b0;
-            c2_state_ready    = 1'b0;
-        end else if (in_valid) begin
+    // Blocking apply so a PFD/CP edge can update Vc at the true event time
+    // (not once per 2 ns system clock, which aliases 5 GHz UP/DN pulses).
+    task automatic apply_event();
+        begin
             in_seq.count = in_term_count;
             for (lf_i = 0; lf_i < in_term_count; lf_i = lf_i + 1)
                 in_seq.terms[lf_i] = in_terms[lf_i];
@@ -59,10 +58,19 @@ module loop_filter #(
             // Event time = input terms' origin (CP rebases all terms to the event)
             lf_tk = (in_seq.count > 0) ? in_seq.terms[0].t0 : ($realtime * 1.0e-9);
 
+            // Vc/C2 memory is stored as a term based at lf_tk, and eval_xreal_at_t()
+            // treats terms as causal (skips t0 > t).  CP terms carry true event times
+            // while the count==0 fallback carries a clock edge, so lf_tk can step
+            // backwards; that would silently evaluate the memory to 0 and dump the
+            // whole accumulated Vc.  Hold the state timeline monotonic.
+            if (vc_state_ready && lf_tk < lf_tk_last)
+                lf_tk = lf_tk_last;
+            lf_tk_last = lf_tk;
+
             // Capacitor memory: previous Vc at the new event time.
             // CP input is typically only 1–2 rebased terms (not full history), so
             // reconvolve alone is ~0 at tk — lf_vc0 is the real integrating state.
-            lf_vc0 = vc_state_ready ? eval_xreal_at_t(vc_state, lf_tk) : 0.0;
+            lf_vc0 = vc_state_ready ? eval_xreal_at_t(vc_state, lf_tk) : VC_INIT;
 
             // Zero-state response to the (compressed) input terms at this event
             vc_seq = convolve_with_filter(in_seq, FILTER_C, FILTER_P, FILTER_N);
@@ -97,7 +105,7 @@ module loop_filter #(
                 tau_c2  = FILTER_R * FILTER_C2;
                 pole_c2 = -1.0 / tau_c2;
                 gain_c2 =  1.0 / tau_c2;
-                lf_c20  = c2_state_ready ? eval_xreal_at_t(c2_state, lf_tk) : 0.0;
+                lf_c20  = c2_state_ready ? eval_xreal_at_t(c2_state, lf_tk) : VC_INIT;
                 c2_seq  = convolve_with_filter(raw_seq, gain_c2, pole_c2, 1);
                 if (real_abs(lf_c20) > 1.0e-15)
                     xreal_add_term(c2_seq, lf_c20, pole_c2, 1, lf_tk);
@@ -110,13 +118,58 @@ module loop_filter #(
                 out_seq = raw_seq;
             end
 
-            out_term_count <= out_seq.count;
+            out_term_count = out_seq.count;
             for (lf_i = 0; lf_i < out_seq.count; lf_i = lf_i + 1) begin
-                out_terms[lf_i].b  <= out_seq.terms[lf_i].b;
-                out_terms[lf_i].a  <= out_seq.terms[lf_i].a;
-                out_terms[lf_i].m  <= out_seq.terms[lf_i].m;
-                out_terms[lf_i].t0 <= out_seq.terms[lf_i].t0;
+                out_terms[lf_i].b  = out_seq.terms[lf_i].b;
+                out_terms[lf_i].a  = out_seq.terms[lf_i].a;
+                out_terms[lf_i].m  = out_seq.terms[lf_i].m;
+                out_terms[lf_i].t0 = out_seq.terms[lf_i].t0;
             end
+        end
+    endtask
+
+    // Hold Vc / Vout at VC_INIT from t=0 so fout starts at F_REF (phase-step
+    // acquisition). C2 memory is a=0 DC — storing it on pole_c2 = -1/(R*C2)
+    // would decay in ~19 ns and dump the lock voltage.
+    task automatic seed_init();
+        begin
+            xreal_clear(vc_state);
+            xreal_add_term(vc_state, VC_INIT, FILTER_P, 1, 0.0);
+            vc_state_ready = 1'b1;
+            lf_tk_last     = 0.0;
+
+            xreal_clear(raw_seq);
+            xreal_add_term(raw_seq, VC_INIT, 0.0, 1, 0.0);
+
+            if (real_abs(FILTER_C2) > 1.0e-30 && real_abs(FILTER_R) > 1.0e-30) begin
+                xreal_clear(c2_state);
+                xreal_add_term(c2_state, VC_INIT, 0.0, 1, 0.0);
+                c2_state_ready = 1'b1;
+                out_seq        = c2_state;
+            end else begin
+                c2_state_ready = 1'b0;
+                out_seq        = vc_state;
+            end
+
+            out_term_count = out_seq.count;
+            for (lf_i = 0; lf_i < out_seq.count; lf_i = lf_i + 1) begin
+                out_terms[lf_i].b  = out_seq.terms[lf_i].b;
+                out_terms[lf_i].a  = out_seq.terms[lf_i].a;
+                out_terms[lf_i].m  = out_seq.terms[lf_i].m;
+                out_terms[lf_i].t0 = out_seq.terms[lf_i].t0;
+            end
+        end
+    endtask
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            out_valid        <= 1'b0;
+            out_term_count   <= 0;
+            vc_state_ready    = 1'b0;
+            c2_state_ready    = 1'b0;
+            lf_tk_last        = 0.0;
+        end else if (in_valid) begin
+            apply_event();
             out_valid <= 1'b1;
         end else begin
             out_valid <= 1'b0;

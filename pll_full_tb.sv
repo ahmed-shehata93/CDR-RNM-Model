@@ -10,6 +10,8 @@
 // Viva plot helpers (real-valued):
 //   ref_rise, fb_rise            — logic levels into PFD
 //   ref_xbit_at_t, fb_xbit_at_t  — plot copies of ref/fb levels
+//   fb_fall_t / fb_ideal_t / fb_jitter_t -> fb_xbit_fall_times.csv
+//     noisy hi->lo times, ideal grid at T_avg, TIE = noisy - ideal
 //   icp_at_t                     — charge-pump current [A] via cp_eval_current_at_t()
 //   lf_v_at_t, vco_fout_at_t     — eval_xreal_at_t()
 //   pfd_state_at_t               — -1 DOWN, 0 ZERO, +1 UP
@@ -22,7 +24,7 @@
 //   1 = unit step  (VCO_STEP_AMP)
 //   2 = ramp       (slope VCO_RAMP_SLOPE, built as A*u(t) - A*exp(-t/tau), m=1 terms only)
 
-`timescale 1ns / 1ps
+`timescale 1ns / 10fs
 
 import xreal_pkg::*;
 
@@ -35,37 +37,66 @@ module pll_full_tb;
     localparam real VCO_RAMP_TAU   = 50.0e-6; // [s] curvature constant (>> T_SIM)
     localparam real VCO_RAMP_AMP   = VCO_RAMP_SLOPE * VCO_RAMP_TAU;
 
-    localparam real F_REF          = 60.0e6;  // Reference XBIT frequency [Hz]
-    localparam real T_REF_START_NS = 0.0;     // ref first-edge delay vs fb [ns]
-    localparam real F_VCO          = 59.0e6;  // VCO free-running center [Hz]
+    localparam real F_REF          = 5.0e9;   // Reference XBIT frequency [Hz]
+    // PFD is armed on the FB edge after the first REF, so the first compared
+    // pair is one period later. A delay of D from the enable edge then leaves
+    // an UP pulse of (T_ref - D), not D. D=0.05 ns was a 150 ps / 270° step:
+    // near the ±1-cycle PFD rail, so the loop cycle-slips (short UP run, then
+    // a long DN run) and Vc is not a damped sine. 0.25 cycle = 90° stays linear.
+    localparam real PHASE_STEP_CYC = 0.25;
+    localparam real T_REF_NS       = 1.0e9 / F_REF;
+    localparam real T_REF_START_NS = T_REF_NS * (1.0 - PHASE_STEP_CYC);
+    // 500 kHz below F_REF. Lock Vctrl = df/Kvco = 10 mV. Whether this is a
+    // 2nd-order ring or a pull-in ramp depends on lock-in range ~ Icp*Kvco*R.
+    localparam real F_VCO          = 4.9995e9;
     localparam real K_VCO          = 50.0e6;
     localparam real I_CP           = 100.0e-6;
     // Series-R + C (+ optional C2 ripple).  ζ = (R/2)*sqrt(Icp*Kvco*C).
-    // Tradeoff: large C => slow lock; large R => Kvco*I*R frequency kick / I*R pulses.
-    // C=10nF, R=100: I/C=10mV/us (~20mV in 2us), kick=0.5MHz, I*R=10mV spikes.
-    // C2 filters short ref-rate I*R spikes into VCO / lf_v.
-    localparam real CAP_LF         = 10.0e-9;        // integrating cap [F]
-    localparam real CAP_C2         = 2.0e-9;         // ripple cap [F]
-    localparam real TAU_LF         = 100.0e-6;       // leak time constant [s]
+    // C=2nF, R=189.7 => ζ≈0.3, wn≈1.58e6, Td≈4.2 µs (several rings in T_SIM).
+    // lock-in ≈ Icp*Kvco*R ≈ 0.95 MHz > 500 kHz offset (linear, not pull-in).
+    // C2 = C/20.  PFD is armed on an FB edge after the first REF so the first
+    // charge-pump pulse is UP (F_VCO is low) — releasing on REF made FB-first
+    // DOWN and a −10 mV dip that hid the ring.
+    // Lock Vctrl~(F_REF-F_VCO)/Kvco. 500 kHz / 50 MHz/V = 10 mV.
+    // Seed Vc and VCO at this voltage so acquisition is a phase step (PFD
+    // proportional) instead of a frequency pull (long UP then long DN ramps).
+    localparam real VC_LOCK        = (F_REF - F_VCO) / K_VCO;
+    localparam real CAP_LF         = 2.0e-9;         // integrating cap [F]
+    localparam real CAP_C2         = 100.0e-12;      // ripple cap [F]
+    // Leak must be a parasitic, not a loop element: it caps Vctrl at Iavg*TAU_LF/CAP_LF.
+    localparam real TAU_LF         = 10.0e-3;        // leak time constant [s]
     localparam real POLE_LF        = -1.0 / TAU_LF;
     localparam real FILTER_C       = 1.0 / CAP_LF;   // gain 1/C [V/(A*s)]
-    localparam real R_LF           = 100.0;          // [ohm]
-    localparam real TAU_CP         = 1.0e-9;
-    localparam real T_SIM          = 50.2e-6;
-    localparam real SAMPLE_SLOW    = 0.1;
-    localparam real SAMPLE_STEP_RF = 0.1;
+    localparam real R_LF           = 189.7;          // [ohm] ζ≈0.3
+    // eq. (5) tau: CP current rise/fall time. Rounds the edges of the rectangular
+    // pulse, so it must stay well under a PFD pulse (T_AND_NS up to a ref period).
+    localparam real TAU_CP         = 10.0e-12;       // [s]
+    localparam real T_SIM          = 30.0e-6;
+    // At ~5 GHz, T/2~100ps — 0.05 ns keeps ~4 plot points per RF period. Finer
+    // steps cost linearly in runtime (each one re-evaluates the XREAL sums) and
+    // no longer set the fb fall-time resolution, which is now edge-driven.
+    localparam real SAMPLE_SLOW    = 0.05;
+    localparam real SAMPLE_STEP_RF = 0.05;
     localparam real V_RF_PEAK      = 0.5;
-    // Future XBIT window per converter update (~2*f edges). Keep-alive below
-    // re-arms before the window expires between sparse VCO events.
-    localparam real FB_T_HORIZON   = 2.0e-6;
+    // Future XBIT window: 2 edges/cycle * F * T_HORIZON must fit MAX_XBIT_EDGES
+    // (512). At 5 GHz, T_HORIZON=40ns => ~400 edges. Keep-alive at T_HORIZON/2.
+    localparam real FB_T_HORIZON   = 40.0e-9;
     // White VCO edge jitter (zero-crossing uncertainty) on FB XBIT path only.
     // FB_JITTER_EN=0 => ideal edges; =1 => t_edge += N(0, FB_JITTER_SIGMA^2).
     localparam bit  FB_JITTER_EN    = 1'b0;
     localparam real FB_JITTER_SIGMA = 5.0e-12; // RMS [s] (5 ps default when on)
     localparam int  FB_JITTER_SEED  = 1;
+    // Hi-to-low crossings of fb_rise -> CSV. One fall per FB cycle over T_SIM,
+    // plus headroom for lock overshoot above F_REF / F_VCO.
+    localparam int  MAX_FB_FALL     = int'((F_REF > F_VCO ? F_REF : F_VCO) * T_SIM) + 10000;
 
     logic clk;
     logic rst_n;
+    logic pfd_rst_n;
+    logic ref_enable = 1'b0;
+    bit   fb_live = 1'b0;
+    bit   ref_seen_after_fb = 1'b0;
+    bit   pfd_arm = 1'b0;
 
     logic fb_in_valid;
     logic fb_xbit_valid;
@@ -87,6 +118,7 @@ module pll_full_tb;
     int   pfd_state;
     real  t_event_s;
     real  fb_t_event_s;
+    real  fb_phase_off;
 
     xbit_edge_t  fb_edges [0:MAX_XBIT_EDGES-1];
     int          fb_edge_count;
@@ -115,11 +147,26 @@ module pll_full_tb;
     real fb_xbit_at_t;
     real icp_at_t;
     real lf_v_at_t;
+    real lf_vc_at_t;
     real vco_fout_at_t;
     real vco_rf_at_t;
     real pfd_state_at_t;
     real fb_phase_at_event;
     real t_now_s;
+
+    // Vector of fb_xbit_at_t hi->lo mid-scale crossing times [s] (noisy)
+    // Ideal grid uses average period; jitter = noisy - ideal (TIE)
+    real fb_fall_t   [0:MAX_FB_FALL-1];
+    real fb_ideal_t  [0:MAX_FB_FALL-1];
+    real fb_jitter_t [0:MAX_FB_FALL-1];
+    int  fb_fall_count;
+    int  fb_fall_csv_fd;
+    int  fb_fall_i;
+    int  fb_n_cycles;
+    real fb_period_sum;
+    real fb_T_avg;
+    real fb_jitter_sumsq;
+    real fb_jitter_rms;
 
     bit fb_xbit_ready;
     bit icp_ready;
@@ -131,12 +178,13 @@ module pll_full_tb;
     bit lf_stim_pending;
     bit fb_keepalive_req;
     bit fb_keepalive_armed;
-    logic fb_logic_d1;
+    bit fb_ka_async;
 
     logic fb_xbit_valid_d1;
 
     real cp_t_event;
     int  li;
+    int  ev_i;
 
     localparam real TWO_PI = 2.0 * 3.14159265358979323846;
 
@@ -161,8 +209,14 @@ module pll_full_tb;
         .F_HZ       (F_REF),
         .T_START_NS (T_REF_START_NS)
     ) ref_gen (
+        .enable  (ref_enable),
         .ref_clk (ref_clk)
     );
+
+    // Hold PFD in reset until FB is live, REF has ticked once, then one more
+    // FB edge. Releasing on the first REF made the next edge FB → DOWN.
+    // Arming on FB means the next edge is REF → UP (F_VCO is below F_REF).
+    assign pfd_rst_n = rst_n & pfd_arm;
 
     // XREAL fout -> XBIT (INTEGRATED = phase-accurate VCO feedback).
     // SQUARE+PHASE_SRC=0/1 would map the old xbit_from_xreal_freq*_ helpers.
@@ -181,7 +235,7 @@ module pll_full_tb;
         .freq_terms          (vco_freq_terms),
         .freq_term_count     (vco_freq_count),
         .t_event             (fb_t_event_s),
-        .phase_rad           (0.0),
+        .phase_rad           (fb_phase_off),
         .xbit_valid          (fb_xbit_valid),
         .xbit_edges          (fb_edges),
         .xbit_edge_count     (fb_edge_count),
@@ -199,11 +253,14 @@ module pll_full_tb;
         .bit_out         (fb_logic)
     );
 
+    // Reset delay must stay a small fraction of the compare period, else UP/DN have
+    // no room left to widen and the PFD degenerates into a pure phase detector.
+    // At F_REF=5 GHz (200 ps) 0.05 ns was 25% of the period; 0.01 ns is 5%.
     pfd #(
-        .T_AND_NS (0.05)
+        .T_AND_NS (0.01)
     ) pfd_dut (
         .clk         (clk),
-        .rst_n       (rst_n),
+        .rst_n       (pfd_rst_n),
         .ref_rise    (ref_rise),
         .fb_rise     (fb_rise),
         .pfd_valid   (pfd_valid),
@@ -235,7 +292,8 @@ module pll_full_tb;
         .FILTER_P  (POLE_LF),
         .FILTER_N  (1),
         .FILTER_R  (R_LF),
-        .FILTER_C2 (CAP_C2)
+        .FILTER_C2 (CAP_C2),
+        .VC_INIT   (VC_LOCK)
     ) lf_dut (
         .clk            (clk),
         .rst_n          (rst_n),
@@ -295,10 +353,72 @@ module pll_full_tb;
         end
     endfunction
 
+    // fout terms rebase f0 to the last VCO event, so integral(fout) misses F0*t
+    // already accumulated.  Keepalive must continue the true VCO cycle count or
+    // FB gains ~1/T_HORIZON extra Hertz and Vctrl locks at -that/Kvco (~-0.5 V).
+    function automatic real fb_phase_align_rad(input real t);
+        real true_cyc, model_cyc, diff;
+        begin
+            true_cyc  = F_VCO * t + rf_phi_off_cyc
+                      + integrate_xreal_m1_at_t(vco_delta_f_cached, t);
+            model_cyc = integrate_xreal_m1_at_t(vco_fout_seq, t);
+            diff = true_cyc - model_cyc;
+            diff = diff - $floor(diff);
+            if (diff < 0.0)
+                diff = diff + 1.0;
+            fb_phase_align_rad = TWO_PI * diff;
+        end
+    endfunction
+
+    // Drive LF+VCO from a PFD/CP edge (true event time).  The 2 ns system clock
+    // aliases 5 GHz UP/DN pulses into a DC I_CP ramp and kills the R zero.
+    task automatic commit_analog_from_cp();
+        begin
+            lf_in_count = icp_count;
+            for (ev_i = 0; ev_i < icp_count; ev_i = ev_i + 1)
+                lf_in_terms[ev_i] = icp_terms[ev_i];
+            lf_dut.apply_event();
+
+            lf_v_seq.count = lf_out_count;
+            for (ev_i = 0; ev_i < lf_out_count; ev_i = ev_i + 1)
+                lf_v_seq.terms[ev_i] = lf_out_terms[ev_i];
+            lf_ready = 1'b1;
+
+            if (VCO_DEBUG_MODE == 0) begin
+                fix_t_ev    = cp_t_event;
+                fix_phi_old = vco_ready ? integrate_xreal_m1_at_t(vco_delta_f_cached, fix_t_ev) : 0.0;
+
+                vco_vin_count = lf_out_count;
+                for (ev_i = 0; ev_i < lf_out_count; ev_i = ev_i + 1)
+                    vco_vin_terms[ev_i] = lf_out_terms[ev_i];
+                t_event_s = cp_t_event;
+                vco_dut.apply_vin();
+
+                vco_fout_seq.count = vco_freq_count;
+                for (ev_i = 0; ev_i < vco_freq_count; ev_i = ev_i + 1)
+                    vco_fout_seq.terms[ev_i] = vco_freq_terms[ev_i];
+
+                vco_delta_f_cached.count = vco_df_count;
+                for (ev_i = 0; ev_i < vco_df_count; ev_i = ev_i + 1)
+                    vco_delta_f_cached.terms[ev_i] = vco_df_terms[ev_i];
+
+                fix_phi_new     = integrate_xreal_m1_at_t(vco_delta_f_cached, fix_t_ev);
+                rf_phi_off_cyc += fix_phi_old - fix_phi_new;
+
+                if (!vco_ready) begin
+                    fb_t_event_s       = fix_t_ev;
+                    fb_phase_off       = fb_phase_align_rad(fix_t_ev);
+                    fb_refresh_pending = 1'b1;
+                end
+                vco_ready = 1'b1;
+            end
+        end
+    endtask
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             fb_keepalive_armed <= 1'b0;
-            fb_logic_d1        <= 1'b0;
+            fb_ka_async        = 1'b0;
             lf_in_valid        <= 1'b0;
             vco_in_valid       <= 1'b0;
             fb_in_valid        <= 1'b0;
@@ -307,7 +427,6 @@ module pll_full_tb;
             lf_stim_pending    <= 1'b0;
         end else begin
             fb_in_valid  <= 1'b0;
-            fb_logic_d1  <= fb_logic;
 
             // One-cycle LF stimulus — count/terms must be NBA-settled first
             if (lf_stim_pending) begin
@@ -325,54 +444,48 @@ module pll_full_tb;
                 vco_in_valid <= 1'b0;
             end
 
-            // Timer only arms; actual XBIT reload waits for an fb_logic edge so we
-            // never cancel a mid half-cycle (that caused ~55% duty every 1 us).
+            // Timer only arms. Reload on a real async fb_logic edge (not a clock
+            // sample of it): at ~5 GHz the 2 ns clk aliases fb, so
+            // (fb_logic != fb_logic_d1) can stay false for longer than T_HORIZON
+            // and the scheduled edges expire.  Timeout below force-refreshes if
+            // still armed after a full keepalive period.
             if (fb_keepalive_req && vco_ready) begin
                 fb_keepalive_armed <= 1'b1;
                 fb_keepalive_req   = 1'b0;
             end
 
             if (fb_refresh_pending) begin
+                fb_phase_off       <= fb_phase_align_rad(fb_t_event_s);
                 fb_in_valid        <= 1'b1;
                 fb_refresh_pending <= 1'b0;
-            end else if (fb_keepalive_armed && (fb_logic != fb_logic_d1)) begin
+            end else if (fb_keepalive_armed && fb_ka_async) begin
                 fb_t_event_s       <= $realtime * 1.0e-9;
+                fb_phase_off       <= fb_phase_align_rad($realtime * 1.0e-9);
                 fb_in_valid        <= 1'b1;
                 fb_keepalive_armed <= 1'b0;
+                fb_ka_async        = 1'b0;
             end
 
             // Drain CP result into loop filter (CP applied async on UP/DN edges)
             if (icp_valid) begin
                 refresh_icp_seq_from_ports();
                 icp_ready = 1'b1;
-
-                // All NBA + pending: same race as VCO vin (blocking count + NBA terms
-                // let LF see new count with old terms → unpaired ±10 V PF residues).
-                lf_in_count      <= icp_count;
-                for (li = 0; li < icp_count; li = li + 1)
-                    lf_in_terms[li] <= icp_terms[li];
-                lf_stim_pending  <= 1'b1;
+                // Analog path is event-driven from apply_cmd; do not re-feed LF
+                // on the 2 ns clock (that stretched I_CP into a DC ramp).
                 cp_dut.clear_valid();
             end
 
             if (lf_out_valid) begin
-                lf_v_seq.count = lf_out_count;
-                for (li = 0; li < lf_out_count; li = li + 1)
-                    lf_v_seq.terms[li] = lf_out_terms[li];
-                lf_ready = 1'b1;
-
-                if (VCO_DEBUG_MODE == 0) begin
-                    // All NBA: count/terms/t_event settle together before
-                    // vco_stim_pending pulses vin_valid on the NEXT clock.
-                    vco_vin_count     <= lf_out_count;
+                // Closed-loop LF/VCO already committed on the CP edge.
+                if (VCO_DEBUG_MODE != 0) begin
+                    lf_v_seq.count = lf_out_count;
                     for (li = 0; li < lf_out_count; li = li + 1)
-                        vco_vin_terms[li] <= lf_out_terms[li];
-                    t_event_s         <= $realtime * 1.0e-9;
-                    vco_stim_pending  <= 1'b1;
+                        lf_v_seq.terms[li] = lf_out_terms[li];
+                    lf_ready = 1'b1;
                 end
             end
 
-            if (vco_freq_valid) begin
+            if (vco_freq_valid && !vco_ready) begin
                 fix_t_ev    = $realtime * 1.0e-9;
                 fix_phi_old = vco_ready ? integrate_xreal_m1_at_t(vco_delta_f_cached, fix_t_ev) : 0.0;
 
@@ -384,6 +497,7 @@ module pll_full_tb;
                 // Reloading xbit_to_logic on every VCO update warps duty cycle.
                 if (!vco_ready) begin
                     fb_t_event_s       <= fix_t_ev;
+                    fb_phase_off       <= fb_phase_align_rad(fix_t_ev);
                     fb_refresh_pending <= 1'b1;
                 end
                 vco_ready = 1'b1;
@@ -401,6 +515,12 @@ module pll_full_tb;
         end
     end
 
+    // Real fb edges (5 GHz) — clock-sampled comparison aliases and misses them.
+    always @(fb_logic) begin
+        if (rst_n && fb_keepalive_armed)
+            fb_ka_async = 1'b1;
+    end
+
     // Refresh XBIT before the scheduled edge window expires (latest fout terms).
     initial begin
         fb_keepalive_req = 1'b0;
@@ -408,15 +528,50 @@ module pll_full_tb;
             #(FB_T_HORIZON * 0.5 * 1s);
             if (rst_n && vco_ready)
                 fb_keepalive_req = 1'b1;
+            // Still armed after a full keepalive period: force a reload so a
+            // frozen/aliased fb cannot expire the XBIT window.
+            if (rst_n && fb_keepalive_armed)
+                fb_ka_async = 1'b1;
+        end
+    end
+
+    // fb hi->lo times, taken from the scheduled edge itself: exact to the 1 ps
+    // timescale instead of being quantised by the plot sampling period.
+    always @(negedge fb_rise) begin
+        if (rst_n && fb_fall_count < MAX_FB_FALL) begin
+            fb_fall_t[fb_fall_count] = $realtime * 1.0e-9;
+            fb_fall_count            = fb_fall_count + 1;
         end
     end
 
     // Apply CP on every PFD command change (captures UP-only, DN-only, both-high, and reset-to-0)
     always @(cp_up_cmd or cp_down_cmd) begin
-        if (rst_n) begin
+        if (pfd_rst_n) begin
             pfd_state_at_t = real'(pfd_state);
             cp_t_event     = $realtime * 1.0e-9;
             cp_dut.apply_cmd(cp_up_cmd, cp_down_cmd, cp_t_event);
+            commit_analog_from_cp();
+            cp_dut.clear_valid();
+        end
+    end
+
+    always @(posedge ref_clk) begin
+        if (rst_n && fb_live)
+            ref_seen_after_fb <= 1'b1;
+    end
+
+    always @(posedge fb_rise or negedge rst_n) begin
+        if (!rst_n)
+            pfd_arm <= 1'b0;
+        else if (ref_seen_after_fb && !pfd_arm) begin
+            pfd_arm <= 1'b1;
+        end
+    end
+
+    always @(posedge fb_rise) begin
+        if (rst_n && !fb_live) begin
+            fb_live    = 1'b1;
+            ref_enable = 1'b1;
         end
     end
 
@@ -435,9 +590,11 @@ module pll_full_tb;
     end
 
     initial begin
-        ref_xbit_at_t = 0; fb_xbit_at_t = 0; icp_at_t = 0;
-        lf_v_at_t = 0; vco_fout_at_t = 0; vco_rf_at_t = 0;
+        ref_xbit_at_t = 0; fb_xbit_at_t = 0;
+        icp_at_t = 0;
+        lf_v_at_t = 0; lf_vc_at_t = 0; vco_fout_at_t = 0;
         pfd_state_at_t = 0;
+        fb_fall_count = 0;
         forever begin
             #(SAMPLE_SLOW * 1ns);
             t_now_s = $realtime * 1.0e-9;
@@ -449,47 +606,42 @@ module pll_full_tb;
                 refresh_icp_seq_from_ports();
                 icp_at_t = cp_eval_current_at_t(icp_seq, t_now_s);
             end
-            if (lf_ready)
+            if (lf_ready) begin
                 lf_v_at_t = eval_xreal_at_t(lf_v_seq, t_now_s);
+                lf_vc_at_t = eval_xreal_at_t(lf_dut.vc_state, t_now_s);
+            end
             if (vco_ready)
                 vco_fout_at_t = eval_xreal_at_t(vco_fout_seq, t_now_s);
         end
     end
 
     initial begin
+        t_now_s     = 0.0;
+        rf_phi_cyc  = 0.0;
+        vco_rf_at_t = V_RF_PEAK;
         forever begin
             #(SAMPLE_STEP_RF * 1ns);
             t_now_s = $realtime * 1.0e-9;
-            if (vco_ready) begin
-                // Same as eval_vco_rf_at_t, plus the cross-event phase offset.
-                rf_phi_cyc  = rf_phi_off_cyc
-                            + integrate_xreal_m1_at_t(vco_delta_f_cached, t_now_s);
-                vco_rf_at_t = V_RF_PEAK * $cos(TWO_PI * (F_VCO * t_now_s + rf_phi_cyc));
-            end
+            rf_phi_cyc = 0.0;
+            if (vco_ready)
+                rf_phi_cyc = rf_phi_off_cyc
+                           + integrate_xreal_m1_at_t(vco_delta_f_cached, t_now_s);
+            vco_rf_at_t = V_RF_PEAK * $cos(TWO_PI * (F_VCO * t_now_s + rf_phi_cyc));
         end
     end
 
-    initial begin
-        $dumpfile("wave.vcd");
-        $dumpvars(0, pll_full_tb.ref_xbit_at_t);
-        $dumpvars(0, pll_full_tb.ref_clk);
-        $dumpvars(0, pll_full_tb.fb_xbit_at_t);
-        $dumpvars(0, pll_full_tb.ref_rise);
-        $dumpvars(0, pll_full_tb.fb_rise);
-        $dumpvars(0, pll_full_tb.icp_at_t);
-        $dumpvars(0, pll_full_tb.lf_v_at_t);
-        $dumpvars(0, pll_full_tb.vco_fout_at_t);
-        $dumpvars(0, pll_full_tb.vco_rf_at_t);
-        $dumpvars(0, pll_full_tb.pfd_state_at_t);
-        $dumpvars(0, pll_full_tb.pfd_dut.ref_seen);
-        $dumpvars(0, pll_full_tb.pfd_dut.fb_seen);
-        $dumpvars(0, pll_full_tb.fb_phase_at_event);
-    end
+    // Waveforms go to the SHM database only (see the $shm_open block below).
+    // The VCD used to hold the same signals a second time (~528 MB per run);
+    // re-add $dumpfile/$dumpvars here if a VCD-only viewer is needed.
 
     initial begin
         xreal_seq_t vco_step_in;
 
         rst_n = 0;
+        ref_enable = 0;
+        fb_live = 0;
+        ref_seen_after_fb = 0;
+        pfd_arm = 0;
         fb_in_valid = 0;
         fb_xbit_ready = 0;
         icp_ready = 0; lf_ready = 0; vco_ready = 0;
@@ -498,16 +650,27 @@ module pll_full_tb;
         lf_stim_pending = 0;
         fb_keepalive_req = 0;
         fb_keepalive_armed = 0;
-        fb_logic_d1 = 0;
+        fb_ka_async = 0;
+        fb_phase_off    = 0.0;
 
         repeat (5) @(posedge clk);
         rst_n = 1;
 
-        // Seed free-running VCO (vin=0 => fout=F0) so xreal_to_xbit / xbit_to_logic
-        // can drive fb_rise before the first CP/LF event.
+        // Seed LF capacitor + VCO at lock voltage so fout starts at F_REF.
+        // A frequency pull saturates the PFD (long UP, then long DN) and makes
+        // vctrl a triangle; a phase step keeps UP/DN proportional (more sine).
         if (VCO_DEBUG_MODE == 0) begin
+            lf_dut.seed_init();
+            lf_v_seq.count = lf_out_count;
+            for (li = 0; li < lf_out_count; li = li + 1)
+                lf_v_seq.terms[li] = lf_out_terms[li];
+            lf_ready = 1'b1;
+
             xreal_clear(vco_step_in);
-            vco_vin_count = 0;
+            xreal_add_unit_step(vco_step_in, VC_LOCK, 0.0);
+            vco_vin_count = vco_step_in.count;
+            for (li = 0; li < vco_step_in.count; li = li + 1)
+                vco_vin_terms[li] = vco_step_in.terms[li];
             t_event_s = 0.0;
             @(posedge clk);
             vco_stim_pending = 1'b1;
@@ -545,6 +708,10 @@ module pll_full_tb;
             $display(" PLL full chain — PFD / CP / LF / VCO / xreal_to_xbit / xbit_to_logic");
         $display(" F_REF=%0.3e Hz  F_VCO=%0.3e Hz  I_CP=%0.3e A  R_LF=%0.3e ohm  C=%0.3e F  C2=%0.3e F",
                  F_REF, F_VCO, I_CP, R_LF, CAP_LF, CAP_C2);
+        $display(" 2nd-order: wn=%0.3e rad/s  zeta=%0.3f  lock-in df~%0.3e Hz  init df=%0.3e Hz",
+                 (I_CP * K_VCO / CAP_LF) ** 0.5,
+                 0.5 * R_LF * ((I_CP * K_VCO * CAP_LF) ** 0.5),
+                 I_CP * K_VCO * R_LF, F_REF - F_VCO);
         $display(" lock Vctrl~(F_REF-F_VCO)/Kvco = %0.4f V", (F_REF - F_VCO) / K_VCO);
         $display(" ramp I/C = %0.3e V/s   CP hold kick Kvco*Icp*R = %0.3e Hz   I*R = %0.3e V",
                  I_CP / CAP_LF, K_VCO * I_CP * R_LF, I_CP * R_LF);
@@ -554,9 +721,9 @@ module pll_full_tb;
                      FB_JITTER_SIGMA, FB_JITTER_SEED);
         else
             $display(" FB white edge jitter OFF");
-        $display(" ref_clk = free-running square wave from ref_xbit_gen");
+        $display(" ref_clk starts when fb_rise is live, plus T_REF_START_NS phase offset");
         $display(" icp_at_t = charge-pump current [A]");
-        $display(" Viva: ref_xbit_at_t fb_xbit_at_t icp_at_t lf_v_at_t vco_fout_at_t vco_rf_at_t");
+        $display(" Viva: ref_xbit_at_t fb_xbit_at_t icp_at_t lf_v_at_t lf_vc_at_t vco_fout_at_t vco_rf_at_t");
         $display("------------------------------------------------------------");
         $display(" SIM_START  target_T_SIM = %0.6e s  (%0.3f us)", T_SIM, T_SIM * 1.0e6);
         $display(" SIM_START  sim_time     = %0.9f s  ($realtime=%0t)", $realtime / 1s, $realtime);
@@ -565,6 +732,52 @@ module pll_full_tb;
         $display("============================================================");
 
         #(T_SIM * 1s);
+
+        // Build ideal period grid + TIE jitter; dump noisy / ideal / jitter CSV
+        if (fb_fall_count >= 2) begin
+            fb_n_cycles   = fb_fall_count - 1;
+            // Average period = sum of consecutive periods / number of cycles
+            // (equals (t_last - t_first) / (N-1))
+            fb_period_sum = 0.0;
+            for (fb_fall_i = 0; fb_fall_i < fb_n_cycles; fb_fall_i = fb_fall_i + 1)
+                fb_period_sum = fb_period_sum
+                              + (fb_fall_t[fb_fall_i + 1] - fb_fall_t[fb_fall_i]);
+            fb_T_avg = fb_period_sum / real'(fb_n_cycles);
+
+            fb_jitter_sumsq = 0.0;
+            for (fb_fall_i = 0; fb_fall_i < fb_fall_count; fb_fall_i = fb_fall_i + 1) begin
+                fb_ideal_t[fb_fall_i]  = fb_fall_t[0] + real'(fb_fall_i) * fb_T_avg;
+                fb_jitter_t[fb_fall_i] = fb_fall_t[fb_fall_i] - fb_ideal_t[fb_fall_i];
+                fb_jitter_sumsq = fb_jitter_sumsq
+                                + fb_jitter_t[fb_fall_i] * fb_jitter_t[fb_fall_i];
+            end
+            fb_jitter_rms = $sqrt(fb_jitter_sumsq / real'(fb_fall_count));
+
+            fb_fall_csv_fd = $fopen("fb_xbit_fall_times.csv", "w");
+            if (fb_fall_csv_fd == 0) begin
+                $display(" ERROR: could not open fb_xbit_fall_times.csv for write");
+            end else begin
+                $fwrite(fb_fall_csv_fd, "idx,t_noisy_s,t_ideal_s,jitter_s\n");
+                for (fb_fall_i = 0; fb_fall_i < fb_fall_count; fb_fall_i = fb_fall_i + 1)
+                    $fwrite(fb_fall_csv_fd, "%0d,%0.16e,%0.16e,%0.16e\n",
+                            fb_fall_i,
+                            fb_fall_t[fb_fall_i],
+                            fb_ideal_t[fb_fall_i],
+                            fb_jitter_t[fb_fall_i]);
+                $fclose(fb_fall_csv_fd);
+                $display(" Wrote %0d rows to fb_xbit_fall_times.csv", fb_fall_count);
+                $display(" T_avg = %0.16e s  (%0.6f GHz)  from %0d cycles",
+                         fb_T_avg, 1.0e-9 / fb_T_avg, fb_n_cycles);
+                $display(" TIE RMS (noisy - ideal) = %0.6e s  (%0.3f ps)",
+                         fb_jitter_rms, fb_jitter_rms * 1.0e12);
+                if (fb_fall_count >= MAX_FB_FALL)
+                    $display(" WARNING: fb_fall vector full (MAX_FB_FALL=%0d); increase limit",
+                             MAX_FB_FALL);
+            end
+        end else begin
+            $display(" WARNING: need >= 2 fall edges for T_avg / jitter (got %0d)",
+                     fb_fall_count);
+        end
 
         $display("============================================================");
         $display(" SIM_END    sim_time     = %0.9f s  (%0.3f us)", $realtime / 1s, ($realtime / 1s) * 1.0e6);
@@ -576,8 +789,13 @@ module pll_full_tb;
         $finish;
     end
 
+    // Probe the plot signals explicitly. $shm_probe("AS") recorded every signal in
+    // the design (including the fb_fall_* vectors and the 512-entry edge arrays).
     initial begin
-        $dumpfile("out.vcd");
-        $shm_open("waves_new.shm"); $shm_probe("AS");
+        $shm_open("waves_new.shm");
+        $shm_probe(ref_xbit_at_t, ref_clk, fb_xbit_at_t, ref_rise, fb_rise,
+                   icp_at_t, lf_v_at_t, lf_vc_at_t, vco_fout_at_t, vco_rf_at_t,
+                   pfd_state_at_t, fb_phase_at_event);
+        $shm_probe(pfd_dut.ref_seen, pfd_dut.fb_seen);
     end
 endmodule

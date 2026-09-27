@@ -13,6 +13,12 @@ package xreal_pkg;
 
     parameter int MAX_XREAL_TERMS = 32;
 
+    // Edge-time solver tolerance [s]; finer than the 10 fs scheduling precision.
+    // At 5 GHz a 1 ps grid quantises the period to ~24 MHz steps, which pins the
+    // feedback frequency; the solver resolution is useless if the grid is coarser.
+    parameter real XREAL_T_TOL = 1.0e-15;
+
+
     function automatic real real_abs(input real v);
         real_abs = (v < 0.0) ? -v : v;
     endfunction
@@ -769,36 +775,81 @@ package xreal_pkg;
         end
     endfunction
 
-    // Bisection: find t in (t_lo, t_stop] where integral fout = target_cycles [Hz·s].
+    // Find t in (t_lo, t_stop] where integral fout = target_cycles [Hz·s].
+    //
+    // cycles(t) is monotone increasing with slope f(t) > 0, so the root is bracketed
+    // from the instantaneous frequency (about one half-cycle wide instead of the old
+    // fixed 1 ns step) and then solved by Newton steps safeguarded by the bracket.
+    // That is a handful of evaluations per edge instead of a blind 64 halvings.
     function automatic real xreal_find_t_for_cycles(
         input xreal_seq_t fout,
         input real        t_lo,
         input real        target_cycles,
         input real        t_stop
     );
-        real t_a, t_b, t_m, c_b;
+        real t_a, t_b, t_m, t_n, c_a, c_b, c_m, f_lo, f_m, dt_est, dt_n;
         int  iter;
         begin
-            t_a = t_lo;
-            t_b = t_lo + 1.0e-10;
+            t_a  = t_lo;
+            c_a  = integrate_xreal_m1_at_t(fout, t_lo);
+            f_lo = eval_xreal_at_t(fout, t_lo);
+
+            // Constant-frequency estimate of the time to accumulate the missing cycles
+            if (f_lo > 0.0 && target_cycles > c_a)
+                dt_est = (target_cycles - c_a) / f_lo;
+            else
+                dt_est = 1.0e-9;
+            if (dt_est <= 0.0)
+                dt_est = 1.0e-12;
+
+            // Small margin so the first probe usually lands past the root even when
+            // f drifts down slightly, which avoids widening the bracket at all
+            t_b = t_lo + dt_est * 1.001;
             if (t_b > t_stop)
                 t_b = t_stop;
             c_b = integrate_xreal_m1_at_t(fout, t_b);
+
+            // Geometric expansion if f drops after t_lo and the estimate falls short
             while (c_b < target_cycles && t_b < t_stop) begin
-                t_b += 1.0e-9;
+                t_a    = t_b;
+                dt_est = dt_est * 2.0;
+                t_b    = t_b + dt_est;
+                if (t_b > t_stop)
+                    t_b = t_stop;
                 c_b = integrate_xreal_m1_at_t(fout, t_b);
             end
+
             if (c_b < target_cycles) begin
                 xreal_find_t_for_cycles = t_stop;
             end else begin
-                for (iter = 0; iter < 64; iter = iter + 1) begin
-                    t_m = 0.5 * (t_a + t_b);
-                    if (integrate_xreal_m1_at_t(fout, t_m) < target_cycles)
+                t_m = 0.5 * (t_a + t_b);
+                for (iter = 0; iter < 40; iter = iter + 1) begin
+                    c_m = integrate_xreal_m1_at_t(fout, t_m);
+                    if (c_m < target_cycles)
                         t_a = t_m;
                     else
                         t_b = t_m;
+
+                    f_m = eval_xreal_at_t(fout, t_m);
+                    if (f_m > 0.0) begin
+                        dt_n = (target_cycles - c_m) / f_m;
+                        if (real_abs(dt_n) <= XREAL_T_TOL) begin
+                            t_m = t_m + dt_n;
+                            break;
+                        end
+                        t_n = t_m + dt_n;
+                        // Keep the Newton step inside the bracket, else bisect
+                        t_m = (t_n > t_a && t_n < t_b) ? t_n : 0.5 * (t_a + t_b);
+                    end else begin
+                        t_m = 0.5 * (t_a + t_b);
+                    end
+
+                    if ((t_b - t_a) <= XREAL_T_TOL) begin
+                        t_m = 0.5 * (t_a + t_b);
+                        break;
+                    end
                 end
-                xreal_find_t_for_cycles = 0.5 * (t_a + t_b);
+                xreal_find_t_for_cycles = t_m;
             end
         end
     endfunction
@@ -812,12 +863,15 @@ package xreal_pkg;
         input real        phase_offset_rad
     );
         xbit_seq_t seq;
-        real       cycle_pos, c_target, t_last, t_edge;
+        real       cycle_pos, c_target, t_last, t_edge, extra;
         xbit_val_e next_lvl, lvl_at_t;
         begin
             xbit_clear(seq);
-            cycle_pos = integrate_xreal_m1_at_t(fout, t_start)
-                      + phase_offset_rad / (2.0 * 3.14159265358979323846);
+            extra = phase_offset_rad / (2.0 * 3.14159265358979323846);
+            extra = extra - $floor(extra);
+            if (extra < 0.0)
+                extra += 1.0;
+            cycle_pos = integrate_xreal_m1_at_t(fout, t_start) + extra;
             if (cycle_pos - $floor(cycle_pos) < 0.5)
                 lvl_at_t = XBIT_VAL_0;
             else
@@ -831,7 +885,7 @@ package xreal_pkg;
             t_last   = t_start;
 
             while (seq.count < MAX_XBIT_EDGES && t_last < t_stop) begin
-                t_edge = xreal_find_t_for_cycles(fout, t_last, c_target, t_stop);
+                t_edge = xreal_find_t_for_cycles(fout, t_last, c_target - extra, t_stop);
                 if (t_edge >= t_stop || t_edge <= t_last)
                     break;
                 xbit_add_edge(seq, t_edge, next_lvl);

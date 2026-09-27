@@ -39,7 +39,10 @@ module charge_pump #(
 
             I0 = cp_eval_current_at_t(icp_seq, t_ev);
 
-            if (up_cmd)
+            // Section IV-A: PFD is UP / DOWN / ZERO, so both-high is ZERO (no current).
+            if (up_cmd && down_cmd)
+                Iend = 0.0;
+            else if (up_cmd)
                 Iend = I_UP;
             else if (down_cmd)
                 Iend = I_DOWN;

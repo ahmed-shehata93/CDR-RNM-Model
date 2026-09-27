@@ -1,10 +1,8 @@
 // Classic PFD: two D-flip-flops + delayed AND reset pulse.
 //   posedge ref_rise -> UP = 1 (holds until FB completes the cycle)
 //   posedge fb_rise  -> DN = 1 (both stay high ~T_AND_NS, then AND reset clears both)
-//   Illegal lone-set guards: an edge with the partner level already high and its FF
-//   idle is ignored, so a cmd can never latch high with no partner edge coming.
 
-`timescale 1ns / 1ps
+`timescale 1ns / 10fs
 
 import xreal_pkg::*;
 
@@ -38,22 +36,19 @@ module pfd #(
     assign cp_up_cmd   = up_ff;
     assign cp_down_cmd = dn_ff;
 
-    // UP: set on rising REF (unless FB already high with DN not armed — illegal)
+    // UP: set on rising REF, cleared only by the AND reset pulse.  A REF edge that
+    // arrives while UP is already armed holds it high — that is the frequency-error
+    // (cycle-slip) signal, so it must not be masked by the FB level.
     always @(posedge ref_rise or posedge clr_pulse or negedge rst_n) begin
         if (!rst_n || clr_pulse)
-            up_ff <= 1'b0;
-        else if (fb_rise && !dn_ff)
             up_ff <= 1'b0;
         else
             up_ff <= 1'b1;
     end
 
-    // DN: set on rising FB only if REF is low (FB leads) or UP already armed (REF led)
-    //     Block DN-only while REF is already high and UP is 0.
+    // DN: set on rising FB, cleared only by the AND reset pulse.
     always @(posedge fb_rise or posedge clr_pulse or negedge rst_n) begin
         if (!rst_n || clr_pulse)
-            dn_ff <= 1'b0;
-        else if (ref_rise && !up_ff)
             dn_ff <= 1'b0;
         else
             dn_ff <= 1'b1;

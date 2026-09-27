@@ -88,13 +88,16 @@ module xreal_to_xbit #(
                 );
             end else begin
                 // ---- INTEGRATED: edges track continuous VCO phase ----
+                // phase_rad is the true-minus-model cycle remainder (keepalive
+                // continuity).  Without it, each reload restarts at ~0 and FB
+                // gains ~1/T_HORIZON extra Hertz.
                 phase_use = xreal_inst_phase_rad_at_t(freq_seq, t_start)
-                          + PHASE_OFFSET_RAD;
+                          + PHASE_OFFSET_RAD + phase_rad;
                 phase_use = phase_wrap_0_2pi(phase_use);
                 phase_rad_at_event <= phase_use;
 
                 xbit_seq = xbit_gen_from_fout_integrated(
-                    freq_seq, t_start, t_stop, PHASE_OFFSET_RAD
+                    freq_seq, t_start, t_stop, PHASE_OFFSET_RAD + phase_rad
                 );
             end
 
