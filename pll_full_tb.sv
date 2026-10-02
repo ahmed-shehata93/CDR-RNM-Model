@@ -7,15 +7,20 @@
 // Reference:
 //   ref_xbit_gen -> ref_clk / ref_rise (logic)
 //
-// Viva plot helpers (real-valued):
-//   ref_rise, fb_rise            — logic levels into PFD
-//   ref_xbit_at_t, fb_xbit_at_t  — plot copies of ref/fb levels
-//   fb_fall_t / fb_ideal_t / fb_jitter_t -> fb_xbit_fall_times.csv
-//     noisy hi->lo times, ideal grid at T_avg, TIE = noisy - ideal
-//   icp_at_t                     — charge-pump current [A] via cp_eval_current_at_t()
-//   lf_v_at_t, vco_fout_at_t     — eval_xreal_at_t()
-//   pfd_state_at_t               — -1 DOWN, 0 ZERO, +1 UP
-//   vco_rf_at_t                  — bounded cos (plot only; not in PFD path)
+// Analog waveforms for Python (always on, one row per sequence per CP/VCO event):
+//   coeff_snapshots.csv  — icp, lf_v, lf_vc, fout, df terms + phi_off
+//   plot_coeff_waveforms.py rebuilds those signals. They are not sampled here.
+//
+// DUMP_WAVES=1 also turns on the in-simulator probes (debug):
+//   50 ps samplers -> lf_v_at_t, lf_vc_at_t, vco_fout_at_t, vco_rf_at_t, icp_at_t
+//   SHM  waves_new.shm
+//   VCD  pll_full_tb.vcd
+//   of ref_rise, fb_rise, ref_xbit_at_t, fb_xbit_at_t, the *_at_t reals,
+//   pfd_state_at_t, and the PFD seen flags.
+// DUMP_WAVES=0 leaves both databases and the samplers off.
+//
+// fb_fall_t / fb_ideal_t / fb_jitter_t -> fb_xbit_fall_times.csv
+//   noisy hi->lo times after T_CSV_START, ideal grid at T_avg, TIE = noisy - ideal
 //
 // Compile: irun -f compile.f   top: pll_full_tb
 //
@@ -72,9 +77,12 @@ module pll_full_tb;
     // pulse, so it must stay well under a PFD pulse (T_AND_NS up to a ref period).
     localparam real TAU_CP         = 10.0e-12;       // [s]
     localparam real T_SIM          = 30.0e-6;
-    // At ~5 GHz, T/2~100ps — 0.05 ns keeps ~4 plot points per RF period. Finer
-    // steps cost linearly in runtime (each one re-evaluates the XREAL sums) and
-    // no longer set the fb fall-time resolution, which is now edge-driven.
+    // CSV / T_avg / TIE start here so the lock transient is not in the file.
+    localparam real T_CSV_START    = 10.0e-6;
+    // Used only when DUMP_WAVES=1. At ~5 GHz, 0.05 ns is ~4 points per RF period.
+    // Each step re-evaluates the XREAL sums, so leave the samplers off and plot
+    // coeff_snapshots.csv unless a Viva/VCD debug run is needed.
+    localparam bit  DUMP_WAVES     = 1'b0;
     localparam real SAMPLE_SLOW    = 0.05;
     localparam real SAMPLE_STEP_RF = 0.05;
     localparam real V_RF_PEAK      = 0.5;
@@ -162,11 +170,16 @@ module pll_full_tb;
     int  fb_fall_count;
     int  fb_fall_csv_fd;
     int  fb_fall_i;
+    int  fb_fall_i0;
+    int  fb_csv_row;
     int  fb_n_cycles;
     real fb_period_sum;
     real fb_T_avg;
     real fb_jitter_sumsq;
     real fb_jitter_rms;
+
+    int  coeff_fd;
+    int  coeff_evt_id;
 
     bit fb_xbit_ready;
     bit icp_ready;
@@ -353,6 +366,55 @@ module pll_full_tb;
         end
     endfunction
 
+    // One CSV row per sequence. Variable tail is b,a,m,t0 repeated n times.
+    // Python (plot_coeff_waveforms.py) evaluates the sums; the sim does not.
+    task automatic coeff_write_seq(
+        input real        t_snap,
+        input real        phi,
+        input int         pfd_i,
+        input string      seq_name,
+        input xreal_seq_t seq
+    );
+        int n;
+        int ti;
+        begin
+            if (coeff_fd != 0) begin
+                n = seq.count;
+                if (n < 0)
+                    n = 0;
+                if (n > MAX_XREAL_TERMS)
+                    n = MAX_XREAL_TERMS;
+                $fwrite(coeff_fd, "%0d,%0.16e,%0.16e,%0d,%s,%0d",
+                        coeff_evt_id, t_snap, phi, pfd_i, seq_name, n);
+                for (ti = 0; ti < n; ti = ti + 1) begin
+                    $fwrite(coeff_fd, ",%0.16e,%0.16e,%0d,%0.16e",
+                            seq.terms[ti].b,
+                            seq.terms[ti].a,
+                            seq.terms[ti].m,
+                            seq.terms[ti].t0);
+                end
+                $fwrite(coeff_fd, "\n");
+            end
+        end
+    endtask
+
+    task automatic export_coeff_snapshot(input real t_snap);
+        xreal_seq_t vc_snap;
+        begin
+            if (coeff_fd != 0) begin
+                vc_snap = lf_dut.vc_state;
+                coeff_write_seq(t_snap, rf_phi_off_cyc, pfd_state, "icp",   icp_seq);
+                coeff_write_seq(t_snap, rf_phi_off_cyc, pfd_state, "lf_v",  lf_v_seq);
+                coeff_write_seq(t_snap, rf_phi_off_cyc, pfd_state, "lf_vc", vc_snap);
+                coeff_write_seq(t_snap, rf_phi_off_cyc, pfd_state, "fout",  vco_fout_seq);
+                coeff_write_seq(t_snap, rf_phi_off_cyc, pfd_state, "df",    vco_delta_f_cached);
+                coeff_evt_id = coeff_evt_id + 1;
+                if ((coeff_evt_id & 1023) == 0)
+                    $fflush(coeff_fd);
+            end
+        end
+    endtask
+
     // fout terms rebase f0 to the last VCO event, so integral(fout) misses F0*t
     // already accumulated.  Keepalive must continue the true VCO cycle count or
     // FB gains ~1/T_HORIZON extra Hertz and Vctrl locks at -that/Kvco (~-0.5 V).
@@ -412,6 +474,8 @@ module pll_full_tb;
                 end
                 vco_ready = 1'b1;
             end
+            refresh_icp_seq_from_ports();
+            export_coeff_snapshot(cp_t_event);
         end
     endtask
 
@@ -482,6 +546,7 @@ module pll_full_tb;
                     for (li = 0; li < lf_out_count; li = li + 1)
                         lf_v_seq.terms[li] = lf_out_terms[li];
                     lf_ready = 1'b1;
+                    export_coeff_snapshot($realtime * 1.0e-9);
                 end
             end
 
@@ -511,6 +576,7 @@ module pll_full_tb;
                 // Phase continuity: absorb the old-vs-new integral mismatch at t_ev.
                 fix_phi_new     = integrate_xreal_m1_at_t(vco_delta_f_cached, fix_t_ev);
                 rf_phi_off_cyc += fix_phi_old - fix_phi_new;
+                export_coeff_snapshot(fix_t_ev);
             end
         end
     end
@@ -589,29 +655,40 @@ module pll_full_tb;
         end
     end
 
+    // Progress marker. Does not sample the analog waveforms.
+    initial begin
+        forever begin
+            #(10us);
+            $display(" SIM_TIME   %0.3f us  ($realtime=%0t)",
+                     ($realtime / 1s) * 1.0e6, $realtime);
+        end
+    end
+
     initial begin
         ref_xbit_at_t = 0; fb_xbit_at_t = 0;
         icp_at_t = 0;
         lf_v_at_t = 0; lf_vc_at_t = 0; vco_fout_at_t = 0;
         pfd_state_at_t = 0;
         fb_fall_count = 0;
-        forever begin
-            #(SAMPLE_SLOW * 1ns);
-            t_now_s = $realtime * 1.0e-9;
-            ref_xbit_at_t = ref_clk ? 1.0 : 0.0;
-            fb_xbit_at_t  = fb_rise ? 1.0 : 0.0;
-            if (fb_xbit_plot.count > 0)
-                fb_xbit_ready = 1'b1;
-            if (icp_count > 0) begin
-                refresh_icp_seq_from_ports();
-                icp_at_t = cp_eval_current_at_t(icp_seq, t_now_s);
+        if (DUMP_WAVES) begin
+            forever begin
+                #(SAMPLE_SLOW * 1ns);
+                t_now_s = $realtime * 1.0e-9;
+                ref_xbit_at_t = ref_clk ? 1.0 : 0.0;
+                fb_xbit_at_t  = fb_rise ? 1.0 : 0.0;
+                if (fb_xbit_plot.count > 0)
+                    fb_xbit_ready = 1'b1;
+                if (icp_count > 0) begin
+                    refresh_icp_seq_from_ports();
+                    icp_at_t = cp_eval_current_at_t(icp_seq, t_now_s);
+                end
+                if (lf_ready) begin
+                    lf_v_at_t = eval_xreal_at_t(lf_v_seq, t_now_s);
+                    lf_vc_at_t = eval_xreal_at_t(lf_dut.vc_state, t_now_s);
+                end
+                if (vco_ready)
+                    vco_fout_at_t = eval_xreal_at_t(vco_fout_seq, t_now_s);
             end
-            if (lf_ready) begin
-                lf_v_at_t = eval_xreal_at_t(lf_v_seq, t_now_s);
-                lf_vc_at_t = eval_xreal_at_t(lf_dut.vc_state, t_now_s);
-            end
-            if (vco_ready)
-                vco_fout_at_t = eval_xreal_at_t(vco_fout_seq, t_now_s);
         end
     end
 
@@ -619,20 +696,18 @@ module pll_full_tb;
         t_now_s     = 0.0;
         rf_phi_cyc  = 0.0;
         vco_rf_at_t = V_RF_PEAK;
-        forever begin
-            #(SAMPLE_STEP_RF * 1ns);
-            t_now_s = $realtime * 1.0e-9;
-            rf_phi_cyc = 0.0;
-            if (vco_ready)
-                rf_phi_cyc = rf_phi_off_cyc
-                           + integrate_xreal_m1_at_t(vco_delta_f_cached, t_now_s);
-            vco_rf_at_t = V_RF_PEAK * $cos(TWO_PI * (F_VCO * t_now_s + rf_phi_cyc));
+        if (DUMP_WAVES) begin
+            forever begin
+                #(SAMPLE_STEP_RF * 1ns);
+                t_now_s = $realtime * 1.0e-9;
+                rf_phi_cyc = 0.0;
+                if (vco_ready)
+                    rf_phi_cyc = rf_phi_off_cyc
+                               + integrate_xreal_m1_at_t(vco_delta_f_cached, t_now_s);
+                vco_rf_at_t = V_RF_PEAK * $cos(TWO_PI * (F_VCO * t_now_s + rf_phi_cyc));
+            end
         end
     end
-
-    // Waveforms go to the SHM database only (see the $shm_open block below).
-    // The VCD used to hold the same signals a second time (~528 MB per run);
-    // re-add $dumpfile/$dumpvars here if a VCD-only viewer is needed.
 
     initial begin
         xreal_seq_t vco_step_in;
@@ -665,6 +740,7 @@ module pll_full_tb;
             for (li = 0; li < lf_out_count; li = li + 1)
                 lf_v_seq.terms[li] = lf_out_terms[li];
             lf_ready = 1'b1;
+            export_coeff_snapshot(0.0);
 
             xreal_clear(vco_step_in);
             xreal_add_unit_step(vco_step_in, VC_LOCK, 0.0);
@@ -723,7 +799,8 @@ module pll_full_tb;
             $display(" FB white edge jitter OFF");
         $display(" ref_clk starts when fb_rise is live, plus T_REF_START_NS phase offset");
         $display(" icp_at_t = charge-pump current [A]");
-        $display(" Viva: ref_xbit_at_t fb_xbit_at_t icp_at_t lf_v_at_t lf_vc_at_t vco_fout_at_t vco_rf_at_t");
+        $display(" coeff_snapshots.csv -> plot_coeff_waveforms.py");
+        $display(" DUMP_WAVES=%0d (1 = 50 ps samplers + waves_new.shm + pll_full_tb.vcd)", DUMP_WAVES);
         $display("------------------------------------------------------------");
         $display(" SIM_START  target_T_SIM = %0.6e s  (%0.3f us)", T_SIM, T_SIM * 1.0e6);
         $display(" SIM_START  sim_time     = %0.9f s  ($realtime=%0t)", $realtime / 1s, $realtime);
@@ -733,39 +810,50 @@ module pll_full_tb;
 
         #(T_SIM * 1s);
 
-        // Build ideal period grid + TIE jitter; dump noisy / ideal / jitter CSV
-        if (fb_fall_count >= 2) begin
-            fb_n_cycles   = fb_fall_count - 1;
+        // Build ideal period grid + TIE jitter; dump noisy / ideal / jitter CSV.
+        // Falls before T_CSV_START are kept in fb_fall_t but left out of T_avg,
+        // the ideal grid, and the file, so the lock transient does not bow the TIE.
+        fb_fall_i0 = 0;
+        while (fb_fall_i0 < fb_fall_count && fb_fall_t[fb_fall_i0] < T_CSV_START)
+            fb_fall_i0 = fb_fall_i0 + 1;
+
+        if ((fb_fall_count - fb_fall_i0) >= 2) begin
+            fb_n_cycles   = fb_fall_count - fb_fall_i0 - 1;
             // Average period = sum of consecutive periods / number of cycles
-            // (equals (t_last - t_first) / (N-1))
+            // (equals (t_last - t_first) / (N-1)), first fall at/after T_CSV_START
             fb_period_sum = 0.0;
-            for (fb_fall_i = 0; fb_fall_i < fb_n_cycles; fb_fall_i = fb_fall_i + 1)
+            for (fb_fall_i = fb_fall_i0; fb_fall_i < fb_fall_count - 1; fb_fall_i = fb_fall_i + 1)
                 fb_period_sum = fb_period_sum
                               + (fb_fall_t[fb_fall_i + 1] - fb_fall_t[fb_fall_i]);
             fb_T_avg = fb_period_sum / real'(fb_n_cycles);
 
             fb_jitter_sumsq = 0.0;
-            for (fb_fall_i = 0; fb_fall_i < fb_fall_count; fb_fall_i = fb_fall_i + 1) begin
-                fb_ideal_t[fb_fall_i]  = fb_fall_t[0] + real'(fb_fall_i) * fb_T_avg;
+            for (fb_fall_i = fb_fall_i0; fb_fall_i < fb_fall_count; fb_fall_i = fb_fall_i + 1) begin
+                fb_ideal_t[fb_fall_i]  = fb_fall_t[fb_fall_i0]
+                                       + real'(fb_fall_i - fb_fall_i0) * fb_T_avg;
                 fb_jitter_t[fb_fall_i] = fb_fall_t[fb_fall_i] - fb_ideal_t[fb_fall_i];
                 fb_jitter_sumsq = fb_jitter_sumsq
                                 + fb_jitter_t[fb_fall_i] * fb_jitter_t[fb_fall_i];
             end
-            fb_jitter_rms = $sqrt(fb_jitter_sumsq / real'(fb_fall_count));
+            fb_jitter_rms = $sqrt(fb_jitter_sumsq / real'(fb_fall_count - fb_fall_i0));
 
             fb_fall_csv_fd = $fopen("fb_xbit_fall_times.csv", "w");
             if (fb_fall_csv_fd == 0) begin
                 $display(" ERROR: could not open fb_xbit_fall_times.csv for write");
             end else begin
                 $fwrite(fb_fall_csv_fd, "idx,t_noisy_s,t_ideal_s,jitter_s\n");
-                for (fb_fall_i = 0; fb_fall_i < fb_fall_count; fb_fall_i = fb_fall_i + 1)
+                fb_csv_row = 0;
+                for (fb_fall_i = fb_fall_i0; fb_fall_i < fb_fall_count; fb_fall_i = fb_fall_i + 1) begin
                     $fwrite(fb_fall_csv_fd, "%0d,%0.16e,%0.16e,%0.16e\n",
-                            fb_fall_i,
+                            fb_csv_row,
                             fb_fall_t[fb_fall_i],
                             fb_ideal_t[fb_fall_i],
                             fb_jitter_t[fb_fall_i]);
+                    fb_csv_row = fb_csv_row + 1;
+                end
                 $fclose(fb_fall_csv_fd);
-                $display(" Wrote %0d rows to fb_xbit_fall_times.csv", fb_fall_count);
+                $display(" Wrote %0d rows to fb_xbit_fall_times.csv (dropped %0d falls before %0.3e s)",
+                         fb_csv_row, fb_fall_i0, T_CSV_START);
                 $display(" T_avg = %0.16e s  (%0.6f GHz)  from %0d cycles",
                          fb_T_avg, 1.0e-9 / fb_T_avg, fb_n_cycles);
                 $display(" TIE RMS (noisy - ideal) = %0.6e s  (%0.3f ps)",
@@ -775,8 +863,8 @@ module pll_full_tb;
                              MAX_FB_FALL);
             end
         end else begin
-            $display(" WARNING: need >= 2 fall edges for T_avg / jitter (got %0d)",
-                     fb_fall_count);
+            $display(" WARNING: need >= 2 fall edges at/after %0.3e s for T_avg / jitter (got %0d, dropped %0d)",
+                     T_CSV_START, fb_fall_count - fb_fall_i0, fb_fall_i0);
         end
 
         $display("============================================================");
@@ -785,17 +873,46 @@ module pll_full_tb;
         $display(" SIM_END    wall_clock:");
         $system("date");
         $display(" (For machine runtime see irun.log 'total:' or shell 'time irun ...')");
+        $display(" coeff snapshots: %0d events -> coeff_snapshots.csv", coeff_evt_id);
         $display("============================================================");
+        if (coeff_fd != 0)
+            $fclose(coeff_fd);
         $finish;
     end
 
-    // Probe the plot signals explicitly. $shm_probe("AS") recorded every signal in
-    // the design (including the fb_fall_* vectors and the 512-entry edge arrays).
+    // Coefficient log is the default waveform path. Open it before any CP edge.
     initial begin
-        $shm_open("waves_new.shm");
-        $shm_probe(ref_xbit_at_t, ref_clk, fb_xbit_at_t, ref_rise, fb_rise,
-                   icp_at_t, lf_v_at_t, lf_vc_at_t, vco_fout_at_t, vco_rf_at_t,
-                   pfd_state_at_t, fb_phase_at_event);
-        $shm_probe(pfd_dut.ref_seen, pfd_dut.fb_seen);
+        coeff_evt_id = 0;
+        coeff_fd = $fopen("coeff_snapshots.csv", "w");
+        if (coeff_fd == 0) begin
+            $display(" ERROR: could not open coeff_snapshots.csv for write");
+        end else begin
+            $fwrite(coeff_fd, "# F_VCO %0.16e\n", F_VCO);
+            $fwrite(coeff_fd, "# V_RF_PEAK %0.16e\n", V_RF_PEAK);
+            $fwrite(coeff_fd, "# F_REF %0.16e\n", F_REF);
+            $fwrite(coeff_fd, "# T_SIM %0.16e\n", T_SIM);
+            $fwrite(coeff_fd, "evt,t_s,phi_off,pfd,seq,n,b,a,m,t0\n");
+            $fflush(coeff_fd);
+        end
+    end
+
+    // DUMP_WAVES=1 records the same probe list in both databases.
+    // SHM: waves_new.shm    VCD: pll_full_tb.vcd
+    // $shm_probe("AS") used to record every signal, including the fb_fall_*
+    // vectors and the 512-entry edge arrays; keep the explicit list.
+    initial begin
+        if (DUMP_WAVES) begin
+            $dumpfile("pll_full_tb.vcd");
+            $dumpvars(0, ref_xbit_at_t, ref_clk, fb_xbit_at_t, ref_rise, fb_rise,
+                         icp_at_t, lf_v_at_t, lf_vc_at_t, vco_fout_at_t, vco_rf_at_t,
+                         pfd_state_at_t, fb_phase_at_event);
+            $dumpvars(0, pfd_dut.ref_seen, pfd_dut.fb_seen);
+
+            $shm_open("waves_new.shm");
+            $shm_probe(ref_xbit_at_t, ref_clk, fb_xbit_at_t, ref_rise, fb_rise,
+                       icp_at_t, lf_v_at_t, lf_vc_at_t, vco_fout_at_t, vco_rf_at_t,
+                       pfd_state_at_t, fb_phase_at_event);
+            $shm_probe(pfd_dut.ref_seen, pfd_dut.fb_seen);
+        end
     end
 endmodule
