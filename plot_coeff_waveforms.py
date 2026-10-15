@@ -284,7 +284,7 @@ def main():
     rf_z = sample_rf(events, zoom_t, f_vco, v_peak)
 
     tus = sample_t * 1e6
-    fig, axes = plt.subplots(4, 1, figsize=(10, 12), constrained_layout=True)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 9), constrained_layout=True)
 
     axes[0].plot(tus, lf_v * 1e3, label="lf_v")
     axes[0].plot(tus, lf_vc * 1e3, label="lf_vc", alpha=0.85)
@@ -294,6 +294,7 @@ def main():
     axes[0].legend()
 
     axes[1].plot(tus, fout / 1e9)
+    axes[1].set_ylim(4.9, 5.2)
     axes[1].set_ylabel("Frequency (GHz)")
     axes[1].set_title("VCO fout")
     axes[1].grid(True)
@@ -303,24 +304,32 @@ def main():
     axes[2].set_title("Charge-pump current, settled value averaged over each sample step")
     axes[2].grid(True)
 
-    ax_i = axes[3]
-    ax_i.plot(zoom_t * 1e9, icp_z * 1e6, color="C0", label="icp")
-    ax_i.set_ylabel("icp (uA)", color="C0")
-    ax_i.set_xlabel("Time (ns)")
-    ax_i.set_title(f"Zoom at {args.zoom * 1e6:.3f} us")
-    ax_i.grid(True)
-    ax_r = ax_i.twinx()
-    ax_r.plot(zoom_t * 1e9, rf_z, color="C1", alpha=0.8, label="vco_rf")
-    ax_r.set_ylabel("vco_rf (V)", color="C1")
-    h1, l1 = ax_i.get_legend_handles_labels()
-    h2, l2 = ax_r.get_legend_handles_labels()
-    ax_i.legend(h1 + h2, l1 + l2, loc="upper right")
-
-    for ax in axes[:3]:
+    for ax in axes:
         ax.set_xlabel("Time (us)")
 
-    fig.savefig(args.out, dpi=120)
-    print(f"Wrote {args.out}  ({len(events)} snapshots, {len(sample_t)} baseband points)")
+    out = Path(args.out)
+    icp_out = out.with_name(out.stem + "_zoom_icp" + out.suffix)
+    rf_out = out.with_name(out.stem + "_zoom_vco_rf" + out.suffix)
+    zoom_title = f"Zoom at {args.zoom * 1e6:.3f} us"
+
+    fig_icp, ax_icp = plt.subplots(figsize=(10, 4), constrained_layout=True)
+    ax_icp.plot(zoom_t * 1e9, icp_z * 1e6, color="C0")
+    ax_icp.set_ylabel("icp (uA)")
+    ax_icp.set_xlabel("Time (ns)")
+    ax_icp.set_title(zoom_title)
+    ax_icp.grid(True)
+
+    fig_rf, ax_rf = plt.subplots(figsize=(10, 4), constrained_layout=True)
+    ax_rf.plot(zoom_t * 1e9, rf_z, color="C1")
+    ax_rf.set_ylabel("vco_rf (V)")
+    ax_rf.set_xlabel("Time (ns)")
+    ax_rf.set_title(zoom_title)
+    ax_rf.grid(True)
+
+    fig.savefig(out, dpi=120)
+    fig_icp.savefig(icp_out, dpi=120)
+    fig_rf.savefig(rf_out, dpi=120)
+    print(f"Wrote {out}, {icp_out.name}, {rf_out.name}  ({len(events)} snapshots, {len(sample_t)} baseband points)")
     if not args.no_show:
         plt.show()
 

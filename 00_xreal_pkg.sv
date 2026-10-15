@@ -657,11 +657,18 @@ package xreal_pkg;
     endfunction
 
     // Standard normal N(0,1) via Box-Muller; seed updated in place.
+    // $urandom(seed) does not write the seed back on Xcelium, so every call
+    // returned the same sample. Advance an explicit 32-bit LCG instead.
     function automatic real xreal_randn(ref int seed);
         real u1, u2;
+        int unsigned u;
         begin
-            u1 = (real'($urandom(seed)) + 1.0) / 4294967296.0;
-            u2 = (real'($urandom(seed)) + 1.0) / 4294967296.0;
+            u = unsigned'(seed);
+            u = u * 32'd1664525 + 32'd1013904223;
+            u1 = (real'(u >> 16) * 65536.0 + real'(u & 32'hFFFF) + 1.0) / 4294967296.0;
+            u = u * 32'd1664525 + 32'd1013904223;
+            seed = int'(u);
+            u2 = (real'(u >> 16) * 65536.0 + real'(u & 32'hFFFF) + 1.0) / 4294967296.0;
             xreal_randn = $sqrt(-2.0 * $ln(u1))
                         * $cos(2.0 * 3.14159265358979323846 * u2);
         end

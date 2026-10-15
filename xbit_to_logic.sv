@@ -10,7 +10,9 @@
 
 import xreal_pkg::*;
 
-module xbit_to_logic (
+module xbit_to_logic #(
+    parameter bit ENABLE_JITTER = 1'b0
+)(
     input  logic        clk,
     input  logic        rst_n,
     input  logic        xbit_valid,
@@ -121,25 +123,36 @@ module xbit_to_logic (
                         begin
                             if (use_anchor) begin
                                 automatic real  t_sched;
+                                automatic real  t_ideal;
                                 automatic real  t_prev;
                                 automatic logic lvl;
                                 automatic int   n_emit;
-                                t_sched = t_last_l + spacing;
-                                if (t_sched < t0)
-                                    t_sched = t0;
-                                lvl    = !lvl0;
-                                t_prev = t0;
-                                n_emit = 0;
+                                // Ideal grid only. Noisy timestamps must not become the
+                                // next anchor, or each keepalive commits one random step
+                                // and the TIE plot random-walks.
+                                t_ideal = t_last_l + spacing;
+                                if (t_ideal < t0)
+                                    t_ideal = t0;
+                                t_sched = t_ideal;
+                                lvl     = !lvl0;
+                                t_prev  = t0;
+                                n_emit  = 0;
                                 while (t_sched <= t_stop_l && n_emit < MAX_XBIT_EDGES) begin
+                                    if (t_sched <= t_prev)
+                                        t_sched = t_prev + 1.0e-15;
                                     #((t_sched - t_prev) * 1.0e9);
                                     if (my_id != gen_id)
                                         break;
                                     bit_out       <= lvl;
-                                    t_last_toggle  = t_sched;
+                                    t_last_toggle  = t_ideal;
                                     lvl            = !lvl;
                                     t_prev         = t_sched;
-                                    t_sched        = t_sched + spacing;
                                     n_emit         = n_emit + 1;
+                                    t_ideal        = t_ideal + spacing;
+                                    if (ENABLE_JITTER && n_emit < n_l)
+                                        t_sched = t_ideal + (te_l[n_emit] - (te_l[0] + real'(n_emit) * spacing));
+                                    else
+                                        t_sched = t_ideal;
                                 end
                             end else begin
                                 automatic real t_prev;

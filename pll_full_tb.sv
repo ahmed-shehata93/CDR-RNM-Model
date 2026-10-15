@@ -91,7 +91,7 @@ module pll_full_tb;
     localparam real FB_T_HORIZON   = 40.0e-9;
     // White VCO edge jitter (zero-crossing uncertainty) on FB XBIT path only.
     // FB_JITTER_EN=0 => ideal edges; =1 => t_edge += N(0, FB_JITTER_SIGMA^2).
-    localparam bit  FB_JITTER_EN    = 1'b0;
+    localparam bit  FB_JITTER_EN    = 1'b1;
     localparam real FB_JITTER_SIGMA = 5.0e-12; // RMS [s] (5 ps default when on)
     localparam int  FB_JITTER_SEED  = 1;
     // Hi-to-low crossings of fb_rise -> CSV. One fall per FB cycle over T_SIM,
@@ -256,7 +256,9 @@ module pll_full_tb;
         .phase_rad_at_event  (fb_phase_at_event)
     );
 
-    xbit_to_logic fb_xbit_to_logic (
+    xbit_to_logic #(
+        .ENABLE_JITTER (FB_JITTER_EN)
+    ) fb_xbit_to_logic (
         .clk             (clk),
         .rst_n           (rst_n),
         .xbit_valid      (fb_xbit_valid),
@@ -841,14 +843,24 @@ module pll_full_tb;
             if (fb_fall_csv_fd == 0) begin
                 $display(" ERROR: could not open fb_xbit_fall_times.csv for write");
             end else begin
-                $fwrite(fb_fall_csv_fd, "idx,t_noisy_s,t_ideal_s,jitter_s\n");
+                // jitter_s is the cycle period error. The cumulative TIE in tie_s
+                // is the running sum of that error, so it follows vctrl.
+                $fwrite(fb_fall_csv_fd, "idx,t_noisy_s,t_ideal_s,jitter_s,tie_s\n");
                 fb_csv_row = 0;
                 for (fb_fall_i = fb_fall_i0; fb_fall_i < fb_fall_count; fb_fall_i = fb_fall_i + 1) begin
-                    $fwrite(fb_fall_csv_fd, "%0d,%0.16e,%0.16e,%0.16e\n",
-                            fb_csv_row,
-                            fb_fall_t[fb_fall_i],
-                            fb_ideal_t[fb_fall_i],
-                            fb_jitter_t[fb_fall_i]);
+                    begin
+                        real edge_j;
+                        if (fb_fall_i == fb_fall_i0)
+                            edge_j = 0.0;
+                        else
+                            edge_j = (fb_fall_t[fb_fall_i] - fb_fall_t[fb_fall_i - 1]) - fb_T_avg;
+                        $fwrite(fb_fall_csv_fd, "%0d,%0.16e,%0.16e,%0.16e,%0.16e\n",
+                                fb_csv_row,
+                                fb_fall_t[fb_fall_i],
+                                fb_ideal_t[fb_fall_i],
+                                edge_j,
+                                fb_jitter_t[fb_fall_i]);
+                    end
                     fb_csv_row = fb_csv_row + 1;
                 end
                 $fclose(fb_fall_csv_fd);
